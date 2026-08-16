@@ -165,7 +165,13 @@ def conv_matrix(kernel, pad=0):
     return c_mat
 
 
-def exp_conv(aif_time, aif_cnt, coef, rate):
+_CUMULATIVE_INTEGRATORS = {
+    "trapz": lambda y, x: integ.cumulative_trapezoid(y, x, initial=0.0),
+    "simpson": lambda y, x: integ.cumulative_simpson(y, x=x, initial=0.0),
+}
+
+
+def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz"):
     """
     Analytically convolves an aif with a sum of decaying exponentials
 
@@ -175,9 +181,9 @@ def exp_conv(aif_time, aif_cnt, coef, rate):
 
         exp(-rate[i] * t) * integral_0^t exp(rate[i] * tau) * aif(tau) dtau
 
-    and computing the remaining integral as a running (cumulative
-    trapezoidal) integral instead of a discrete convolution. Unlike
-    np.convolve, this does not require aif_time to be uniformly sampled.
+    and computing the remaining integral as a running cumulative integral
+    instead of a discrete convolution. Unlike np.convolve, this does not
+    require aif_time to be uniformly sampled.
 
     Parameters
     ----------
@@ -190,6 +196,12 @@ def exp_conv(aif_time, aif_cnt, coef, rate):
     rate: array
         Decay rate for each exponential term. A rate of 0 is a valid
         (constant) term.
+    algo: str
+        Integration rule for the cumulative integral: "trapz" (default) or
+        "simpson". Simpson's rule is meaningfully more accurate, especially
+        when aif_time is sparsely sampled, but roughly 3-4x slower per call
+        -- worth it for a single whole-brain fit, usually not worth it
+        inside a per-voxel optimization loop.
 
     Returns
     -------
@@ -198,18 +210,51 @@ def exp_conv(aif_time, aif_cnt, coef, rate):
         aif_time
     """
 
+    if algo not in _CUMULATIVE_INTEGRATORS:
+        raise ValueError(f"algo must be 'trapz' or 'simpson', got {algo!r}")
+    cumulative = _CUMULATIVE_INTEGRATORS[algo]
+
     # Add up the contribution from each exponential term
     hat = np.zeros_like(aif_time)
     for c, r in zip(coef, rate):
         if r == 0:
             # No reweighting needed for a constant term
-            hat += c * integ.cumulative_trapezoid(aif_cnt, aif_time, initial=0.0)
+            hat += c * cumulative(aif_cnt, aif_time)
         else:
             weighted = aif_cnt * np.exp(r * aif_time)
-            integral = integ.cumulative_trapezoid(weighted, aif_time, initial=0.0)
+            integral = cumulative(weighted, aif_time)
             hat += c * np.exp(-r * aif_time) * integral
 
     return hat
+
+
+def resample(time, cnt, new_time):
+    """
+    Linearly resamples cnt from time onto new_time
+
+    Skips the interpolation and returns cnt unchanged if new_time already
+    equals time exactly (e.g. an image-derived input function sampled on
+    the same frame grid as the PET data it's being fit to).
+
+    Parameters
+    ----------
+    time: array
+        A n length array of sampling times for cnt
+    cnt: array
+        A n length array of values sampled at time
+    new_time: array
+        Times to resample cnt onto
+
+    Returns
+    -------
+    new_cnt: array
+        cnt resampled onto new_time
+    """
+
+    if time.shape == new_time.shape and np.array_equal(time, new_time):
+        return cnt
+
+    return interp.interp1d(time, cnt, kind="linear")(new_time)
 
 
 def gen_time_mask(pet, limit=None):
@@ -244,7 +289,7 @@ def gen_time_mask(pet, limit=None):
     return time_msk
 
 
-def iida_oxy_aif(aif, delta=20, prod=0.0012):
+def iida_oxy_aif(aif, delta=20, prod=0.0012, algo="trapz"):
     """
     Extract oxygen and water components from aif using Iida et al., 1993 model
 
@@ -256,6 +301,9 @@ def iida_oxy_aif(aif, delta=20, prod=0.0012):
         Delay paramter for Iida convolution model
     prod: float
         Production rate constant for Iida convolution model
+    algo: str
+        Integration rule passed through to exp_conv: "trapz" (default) or
+        "simpson"
 
     Returns
     -------
@@ -273,7 +321,7 @@ def iida_oxy_aif(aif, delta=20, prod=0.0012):
 
     # Analytically convolve the shifted input function with exp(-prod*t)
     # to extract the water aif
-    aif_conv = exp_conv(aif.time, aif_shift, coef=[1.0], rate=[prod])
+    aif_conv = exp_conv(aif.time, aif_shift, coef=[1.0], rate=[prod], algo=algo)
     aif_water = Tac(aif.time, prod * aif_conv, dc=True, h_life=122.24)
 
     # Extract oxygen portion of input function

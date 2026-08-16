@@ -168,6 +168,72 @@ def test_exp_conv_sums_multiple_terms():
     assert np.allclose(combined, term_one + term_two)
 
 
+def test_exp_conv_rejects_unknown_algo():
+    t = np.arange(0, 10.0)
+    with pytest.raises(ValueError):
+        util.exp_conv(t, t, coef=[1.0], rate=[0.1], algo="bogus")
+
+
+def test_exp_conv_simpson_more_accurate_at_coarse_sampling():
+    # Same closed-form setup as the accuracy test above, but at a coarser
+    # step where simpson's higher-order quadrature should pull noticeably
+    # ahead of trapz.
+    A, a = 100.0, 0.03
+    coef, rate = 0.5, 0.05
+
+    t = np.arange(0, 300, 5.0)
+    aif_cnt = A * np.exp(-a * t)
+    truth = coef * A * (np.exp(-a * t) - np.exp(-rate * t)) / (rate - a)
+
+    trapz_hat = util.exp_conv(t, aif_cnt, coef=[coef], rate=[rate], algo="trapz")
+    simpson_hat = util.exp_conv(t, aif_cnt, coef=[coef], rate=[rate], algo="simpson")
+
+    idx = t >= 20.0
+    trapz_err = np.max(np.abs(trapz_hat[idx] - truth[idx]))
+    simpson_err = np.max(np.abs(simpson_hat[idx] - truth[idx]))
+    assert simpson_err < trapz_err / 20.0
+
+
+# ---- resample -----------------------------------------------------------
+
+
+def test_resample_skips_interpolation_when_grids_match():
+    t = np.arange(0, 50, 1.0)
+    cnt = np.sin(t) + 5.0  # anything non-trivial
+
+    result = util.resample(t, cnt, t.copy())
+    assert np.array_equal(result, cnt)
+
+
+def test_resample_skips_for_equal_but_distinct_arrays():
+    t = np.arange(0, 50, 1.0)
+    cnt = np.linspace(1.0, 10.0, t.shape[0])
+
+    # a genuinely different array object with the same values
+    same_values_new_time = np.arange(0, 50, 1.0)
+    result = util.resample(t, cnt, same_values_new_time)
+    assert np.array_equal(result, cnt)
+
+
+def test_resample_interpolates_when_grids_differ():
+    t = np.arange(0, 50, 1.0)
+    cnt = 2.0 * t + 3.0  # linear, so interpolation should be exact
+
+    new_t = np.arange(0.5, 49.0, 1.0)
+    result = util.resample(t, cnt, new_t)
+    assert np.allclose(result, 2.0 * new_t + 3.0)
+
+
+def test_resample_mismatched_shapes_interpolates_not_skips():
+    t = np.arange(0, 50, 1.0)
+    cnt = 2.0 * t + 3.0
+
+    new_t = np.arange(0, 50, 2.0)  # different length, same start/step
+    result = util.resample(t, cnt, new_t)
+    assert result.shape == new_t.shape
+    assert np.allclose(result, 2.0 * new_t + 3.0)
+
+
 # ---- time masking / peak finding -----------------------------------------
 
 

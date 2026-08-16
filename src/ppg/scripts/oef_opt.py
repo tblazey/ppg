@@ -40,6 +40,17 @@ def main():
     )
     parser.add_argument("out", type=str, nargs=1, help="Name for file output")
     parser.add_argument(
+        "-algo",
+        type=str,
+        nargs=1,
+        default=["trapz"],
+        choices=["trapz", "simpson"],
+        help="Integration rule for the voxelwise fits. 'trapz' (default) is"
+        + " faster; 'simpson' is more accurate, especially for sparsely"
+        + " sampled AIFs, but ~3-4x slower per voxel. The whole-brain fit"
+        + " always uses simpson regardless of this flag.",
+    )
+    parser.add_argument(
         "-avg",
         action="store_const",
         const=[1],
@@ -130,12 +141,15 @@ def main():
     mean_k2 = avgs[1] / 60.0
     mean_cbv = avgs[2] / 100.0 * 1.05
 
-    # Extract water and oxygen components of input funciton
-    aif_oxy, aif_water = ppg.util.iida_oxy_aif(aif, delta=20, prod=0.0012)
+    # Extract water and oxygen components of input funciton. This runs once
+    # regardless of voxel count, so always use the more accurate integrator.
+    aif_oxy, aif_water = ppg.util.iida_oxy_aif(
+        aif, delta=20, prod=0.0012, algo="simpson"
+    )
 
     # Create model for optimization
     mean_model = ppg.pet_model.OxyOne(
-        aif_oxy, aif_water, mean_pet, mean_cbf, mean_k2, mean_cbv
+        aif_oxy, aif_water, mean_pet, mean_cbf, mean_k2, mean_cbv, algo="simpson"
     )
 
     # Optimize the mean pet tac
@@ -191,7 +205,13 @@ def main():
 
         # Make model object for current voxel
         vox_model = ppg.pet_model.OxyOne(
-            aif_oxy, aif_water, vox_pet, cbf_mskd[i], k2_mskd[i], cbv_mskd[i]
+            aif_oxy,
+            aif_water,
+            vox_pet,
+            cbf_mskd[i],
+            k2_mskd[i],
+            cbv_mskd[i],
+            algo=args.algo[0],
         )
 
         # Optimize the voxel pet tac

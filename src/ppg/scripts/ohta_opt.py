@@ -29,6 +29,17 @@ def main():
     )
     parser.add_argument("out", type=str, nargs=1, help="Name for file output")
     parser.add_argument(
+        "-algo",
+        type=str,
+        nargs=1,
+        default=["trapz"],
+        choices=["trapz", "simpson"],
+        help="Integration rule for the voxelwise fits. 'trapz' (default) is"
+        + " faster; 'simpson' is more accurate, especially for sparsely"
+        + " sampled AIFs, but ~3-4x slower per voxel. The whole-brain fit"
+        + " always uses simpson regardless of this flag.",
+    )
+    parser.add_argument(
         "-avg",
         action="store_const",
         const=[1],
@@ -110,7 +121,7 @@ def main():
     # Prep for optmization
     mean_init = np.array([0.0045, 0.02, 0.02])
     mean_bounds = np.stack((mean_init / 5.0, mean_init * 5.0), axis=1)
-    mean_model = ppg.pet_model.OhtaTwo(aif, mean_pet)
+    mean_model = ppg.pet_model.OhtaTwo(aif, mean_pet, algo="simpson")
 
     # Optimize the mean pet tac
     mean_opt = opt.minimize(
@@ -159,7 +170,7 @@ def main():
         vox_pet = ppg.Tac(mean_pet.time, pet_mskd[i, :], dc=True, h_life=h_life)
 
         # Make model object for current voxel
-        vox_model = ppg.pet_model.OhtaTwo(aif, vox_pet)
+        vox_model = ppg.pet_model.OhtaTwo(aif, vox_pet, algo=args.algo[0])
 
         # Optimize the voxel pet tac
         vox_opt = opt.minimize(

@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
+import scipy.interpolate as interp
 
+from ppg import util
 from ppg.pet_model import (
     FdgFour,
     FdgThree,
@@ -24,8 +26,53 @@ def test_flow_two_recovers_known_truth(synth_aif, synth_pet, flow_two_truth):
     model = FlowTwo(synth_aif, synth_pet)
     hat = model.pred(flow_two_truth)
     # synth_pet was built with this exact model/params, on the same grid
+    # (an image-derived input function on the PET's own frame grid, e.g. --
+    # this also exercises util.resample's same-grid skip path)
     assert np.allclose(hat, synth_pet.cnt, rtol=1e-3, atol=1e-6)
     assert model.cost(flow_two_truth) < 1e-6
+
+
+def test_flow_two_handles_aif_and_pet_on_different_grids(synth_aif, flow_two_truth):
+    # A blood-sample-derived AIF, sampled on a completely different grid
+    # than the PET frame times -- exercises util.resample's actual
+    # interpolation path (not the same-grid skip).
+    K1, k2 = flow_two_truth
+    pet_time = np.arange(2.5, 295.0, 5.0)
+    pet = Tac(pet_time, np.zeros_like(pet_time), dc=True, h_life=1220.0)
+
+    model = FlowTwo(synth_aif, pet)
+    hat = model.pred(flow_two_truth)
+
+    assert hat.shape == pet_time.shape
+    assert np.all(np.isfinite(hat))
+
+    # cross-check against exp_conv computed directly on the aif grid, then
+    # manually interpolated onto the (different) pet grid
+    expected_on_aif_grid = util.exp_conv(
+        synth_aif.time, synth_aif.cnt, coef=[K1], rate=[k2]
+    )
+    expected = interp.interp1d(synth_aif.time, expected_on_aif_grid, kind="linear")(
+        pet_time
+    )
+    assert np.allclose(hat, expected)
+
+
+def test_flow_two_algo_defaults_to_trapz_and_accepts_simpson(
+    synth_aif, synth_pet, flow_two_truth
+):
+    default_model = FlowTwo(synth_aif, synth_pet)
+    assert default_model.algo == "trapz"
+
+    trapz_model = FlowTwo(synth_aif, synth_pet, algo="trapz")
+    simpson_model = FlowTwo(synth_aif, synth_pet, algo="simpson")
+
+    trapz_hat = trapz_model.pred(flow_two_truth)
+    simpson_hat = simpson_model.pred(flow_two_truth)
+
+    # same underlying integral, different quadrature -- close but not
+    # required to be identical
+    assert np.allclose(trapz_hat, simpson_hat, rtol=0.05)
+    assert not np.array_equal(trapz_hat, simpson_hat)
 
 
 def test_flow_two_unit_conv():

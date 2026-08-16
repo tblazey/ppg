@@ -33,6 +33,17 @@ def main():
     )
     parser.add_argument("out", type=str, nargs=1, help="Name for file output")
     parser.add_argument(
+        "-algo",
+        type=str,
+        nargs=1,
+        default=["trapz"],
+        choices=["trapz", "simpson"],
+        help="Integration rule for the voxelwise fits. 'trapz' (default) is"
+        + " faster; 'simpson' is more accurate, especially for sparsely"
+        + " sampled AIFs, but ~3-4x slower per voxel. The whole-brain fit"
+        + " always uses simpson regardless of this flag.",
+    )
+    parser.add_argument(
         "-avg",
         action="store_const",
         const=[1],
@@ -161,7 +172,6 @@ def main():
         args.scale[0],
         None,
         args.censor[0],
-        unif=True,
     )
 
     # Create initial values
@@ -178,9 +188,13 @@ def main():
 
     # Setup model
     if args.k4[0] is False:
-        mean_model = ppg.pet_model.FdgThree(aif, mean_pet, plasma=args.wb[0])
+        mean_model = ppg.pet_model.FdgThree(
+            aif, mean_pet, plasma=args.wb[0], algo="simpson"
+        )
     else:
-        mean_model = ppg.pet_model.FdgFour(aif, mean_pet, plasma=args.wb[0])
+        mean_model = ppg.pet_model.FdgFour(
+            aif, mean_pet, plasma=args.wb[0], algo="simpson"
+        )
 
     # Setup inits
     mean_bounds = np.stack((mean_init / 5.0, mean_init * 5.0), axis=1)
@@ -280,9 +294,13 @@ def main():
 
         # Make model object for current voxel
         if args.k4[0] is False:
-            vox_model = ppg.pet_model.FdgThree(aif, vox_pet, plasma=args.wb[0])
+            vox_model = ppg.pet_model.FdgThree(
+                aif, vox_pet, plasma=args.wb[0], algo=args.algo[0]
+            )
         else:
-            vox_model = ppg.pet_model.FdgFour(aif, vox_pet, plasma=args.wb[0])
+            vox_model = ppg.pet_model.FdgFour(
+                aif, vox_pet, plasma=args.wb[0], algo=args.algo[0]
+            )
 
         # Optimize the voxel pet tac
         vox_opt = opt.minimize(

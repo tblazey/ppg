@@ -77,3 +77,34 @@ def test_cbf_opt_voxelwise(tmp_path, monkeypatch):
         assert hist_path.exists()
 
     assert (tmp_path / "out_args.txt").exists()
+
+
+def test_cbf_opt_whole_brain_always_uses_simpson_regardless_of_algo_flag(
+    tmp_path, monkeypatch
+):
+    # The whole-brain fit is supposed to always use simpson, even if the
+    # user asks for -algo trapz (that flag only governs the voxel loop).
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, (1, 1, 1))
+
+    results = {}
+    for algo in ["trapz", "simpson"]:
+        out_prefix = str(tmp_path / f"out_{algo}")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "cbf-opt",
+                aif_path,
+                pet_path,
+                json_path,
+                out_prefix,
+                "-avg",
+                "-algo",
+                algo,
+            ],
+        )
+        with pytest.raises(SystemExit):
+            cbf_opt.main()
+        results[algo] = (tmp_path / f"out_{algo}_wb_vals.csv").read_text()
+
+    assert results["trapz"] == results["simpson"]

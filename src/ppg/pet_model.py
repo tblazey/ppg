@@ -16,7 +16,7 @@ class PetModel:
     Defines generic PET model class
     """
 
-    def __init__(self, aif, pet, name=None):
+    def __init__(self, aif, pet, name=None, algo="trapz"):
         """
         Initialize generic PET model
 
@@ -26,6 +26,11 @@ class PetModel:
             Tac object containing the aif data
         pet: Tac object
             Tac object containing the pet data
+        algo: str
+            Integration rule for models that use util.exp_conv: "trapz"
+            (default, fast) or "simpson" (more accurate, ~3-4x slower per
+            call -- worth it for a single whole-brain fit, usually not
+            worth it inside a per-voxel optimization loop)
         """
 
         # Make sure decay correction status is the same
@@ -36,6 +41,7 @@ class PetModel:
         self.aif = aif
         self.pet = pet
         self.name = name
+        self.algo = algo
 
     def cost(self, params):
         """
@@ -70,7 +76,7 @@ class FdgFour(PetModel):
     Defines 4 parameter, 2 compartment fdg model with blood volume
     """
 
-    def __init__(self, aif, pet, plasma=True):
+    def __init__(self, aif, pet, plasma=True, algo="trapz"):
         """
         Initialize model object for two compartment model
 
@@ -82,10 +88,12 @@ class FdgFour(PetModel):
             Tac object containing the pet data
         plasma: boolean
             True converts input function to plasma
+        algo: str
+            Integration rule for util.exp_conv: "trapz" or "simpson"
         """
 
         # Add input to model objection
-        PetModel.__init__(self, aif, pet, name="FDG with k4")
+        PetModel.__init__(self, aif, pet, name="FDG with k4", algo=algo)
         self.plasma = plasma
 
         # Get plasma version of input function if necessary
@@ -127,7 +135,11 @@ class FdgFour(PetModel):
         coef_1 = K1 / (a2 - a1) * (k3 + k4 - a1)
         coef_2 = K1 / (a2 - a1) * (a2 - k3 - k4)
         hat = util.exp_conv(
-            self.aif.time, self.aif.plasma, coef=[coef_1, coef_2], rate=[a1, a2]
+            self.aif.time,
+            self.aif.plasma,
+            coef=[coef_1, coef_2],
+            rate=[a1, a2],
+            algo=self.algo,
         )
         hat = (1.0 - vb) * hat
 
@@ -135,7 +147,7 @@ class FdgFour(PetModel):
         hat += self.aif.cnt * vb
 
         # Interpolate the model prediction at tac sampling time
-        return interp.interp1d(self.aif.time, hat, kind="linear")(self.pet.time)
+        return util.resample(self.aif.time, hat, self.pet.time)
 
     def comp(self, params):
         """
@@ -173,18 +185,26 @@ class FdgFour(PetModel):
         coef_e1 = K1 / (a2 - a1) * (k4 - a1)
         coef_e2 = K1 / (a2 - a1) * (a2 - k4)
         c_e = util.exp_conv(
-            self.aif.time, self.aif.plasma, coef=[coef_e1, coef_e2], rate=[a1, a2]
+            self.aif.time,
+            self.aif.plasma,
+            coef=[coef_e1, coef_e2],
+            rate=[a1, a2],
+            algo=self.algo,
         )
 
         coef_m = K1 * k3 / (a2 - a1)
         c_m = util.exp_conv(
-            self.aif.time, self.aif.plasma, coef=[coef_m, -coef_m], rate=[a1, a2]
+            self.aif.time,
+            self.aif.plasma,
+            coef=[coef_m, -coef_m],
+            rate=[a1, a2],
+            algo=self.algo,
         )
 
         # Interpolate all the parts
-        c_p_i = interp.interp1d(self.aif.time, c_p, kind="linear")(self.pet.time)
-        c_e_i = interp.interp1d(self.aif.time, c_e, kind="linear")(self.pet.time)
-        c_m_i = interp.interp1d(self.aif.time, c_m, kind="linear")(self.pet.time)
+        c_p_i = util.resample(self.aif.time, c_p, self.pet.time)
+        c_e_i = util.resample(self.aif.time, c_e, self.pet.time)
+        c_m_i = util.resample(self.aif.time, c_m, self.pet.time)
 
         # Return list with components
         return np.stack((c_p_i, c_e_i * (1.0 - vb), c_m_i * (1.0 - vb)), axis=1)
@@ -245,7 +265,7 @@ class FdgThree(PetModel):
     Defines 3 parameter, 2 compartment fdg model with blood volume
     """
 
-    def __init__(self, aif, pet, plasma=True):
+    def __init__(self, aif, pet, plasma=True, algo="trapz"):
         """
         Initialize model object for two compartment model
 
@@ -257,10 +277,12 @@ class FdgThree(PetModel):
             Tac object containing the pet data
         plasma: boolean
             True converts input function to plasma
+        algo: str
+            Integration rule for util.exp_conv: "trapz" or "simpson"
         """
 
         # Add input to model objection
-        PetModel.__init__(self, aif, pet, name="FDG without k4")
+        PetModel.__init__(self, aif, pet, name="FDG without k4", algo=algo)
         self.plasma = plasma
 
         # Get plasma version of input function if necessary
@@ -296,7 +318,11 @@ class FdgThree(PetModel):
         a = k2 + k3
         c_const = K1 * k3 / a
         hat = util.exp_conv(
-            self.aif.time, self.aif.plasma, coef=[c_const, K1 - c_const], rate=[0.0, a]
+            self.aif.time,
+            self.aif.plasma,
+            coef=[c_const, K1 - c_const],
+            rate=[0.0, a],
+            algo=self.algo,
         )
         hat = (1.0 - vb) * hat
 
@@ -304,7 +330,7 @@ class FdgThree(PetModel):
         hat += self.aif.cnt * vb
 
         # Interpolate the model prediction at tac sampling time
-        return interp.interp1d(self.aif.time, hat, kind="linear")(self.pet.time)
+        return util.resample(self.aif.time, hat, self.pet.time)
 
     def comp(self, params):
         """
@@ -334,15 +360,21 @@ class FdgThree(PetModel):
 
         # Analytically convolve the plasma input function with the kernel
         # for each compartment
-        c_e = util.exp_conv(self.aif.time, self.aif.plasma, coef=[K1], rate=[a])
+        c_e = util.exp_conv(
+            self.aif.time, self.aif.plasma, coef=[K1], rate=[a], algo=self.algo
+        )
         c_m = util.exp_conv(
-            self.aif.time, self.aif.plasma, coef=[c_const, -c_const], rate=[0.0, a]
+            self.aif.time,
+            self.aif.plasma,
+            coef=[c_const, -c_const],
+            rate=[0.0, a],
+            algo=self.algo,
         )
 
         # Interpolate all the parts
-        c_p_i = interp.interp1d(self.aif.time, c_p, kind="linear")(self.pet.time)
-        c_e_i = interp.interp1d(self.aif.time, c_e, kind="linear")(self.pet.time)
-        c_m_i = interp.interp1d(self.aif.time, c_m, kind="linear")(self.pet.time)
+        c_p_i = util.resample(self.aif.time, c_p, self.pet.time)
+        c_e_i = util.resample(self.aif.time, c_e, self.pet.time)
+        c_m_i = util.resample(self.aif.time, c_m, self.pet.time)
 
         # Return list with components
         return np.stack((c_p_i, c_e_i * (1.0 - vb), c_m_i * (1.0 - vb)), axis=1)
@@ -402,7 +434,7 @@ class FlowTwo(PetModel):
     Defines 2 paramter, 1 compartment blood flow model
     """
 
-    def __init__(self, aif, pet):
+    def __init__(self, aif, pet, algo="trapz"):
         """
         Initialize model object for two compartment model
 
@@ -412,10 +444,12 @@ class FlowTwo(PetModel):
             Tac object containing the aif data
         pet: Tac object
             Tac object containing the pet data
+        algo: str
+            Integration rule for util.exp_conv: "trapz" or "simpson"
         """
 
         # Initialize model
-        PetModel.__init__(self, aif, pet, name="Flow Model")
+        PetModel.__init__(self, aif, pet, name="Flow Model", algo=algo)
 
     def pred(self, params):
         """
@@ -437,10 +471,12 @@ class FlowTwo(PetModel):
         k2 = params[1]
 
         # Analytically convolve the input function with K1*exp(-k2*t)
-        hat = util.exp_conv(self.aif.time, self.aif.cnt, coef=[K1], rate=[k2])
+        hat = util.exp_conv(
+            self.aif.time, self.aif.cnt, coef=[K1], rate=[k2], algo=self.algo
+        )
 
         # Interpolate the model prediction at tac sampling time
-        return interp.interp1d(self.aif.time, hat, kind="linear")(self.pet.time)
+        return util.resample(self.aif.time, hat, self.pet.time)
 
     def unit_conv(self, params):
         """
@@ -470,7 +506,7 @@ class OhtaTwo(PetModel):
     Defines Ohta two compartment model
     """
 
-    def __init__(self, aif, pet):
+    def __init__(self, aif, pet, algo="trapz"):
         """
         Initialize model object for Ohta model
 
@@ -480,10 +516,12 @@ class OhtaTwo(PetModel):
             Tac object containing the aif data
         pet: Tac object
             Tac object containing the pet data
+        algo: str
+            Integration rule for util.exp_conv: "trapz" or "simpson"
         """
 
         # Initialize model
-        PetModel.__init__(self, aif, pet, name="Ohta Two Compartment")
+        PetModel.__init__(self, aif, pet, name="Ohta Two Compartment", algo=algo)
 
     def pred(self, params):
         """
@@ -506,11 +544,13 @@ class OhtaTwo(PetModel):
         v0 = params[2]
 
         # Analytically convolve the input function with K1*exp(-k2*t)
-        hat = util.exp_conv(self.aif.time, self.aif.cnt, coef=[K1], rate=[k2])
+        hat = util.exp_conv(
+            self.aif.time, self.aif.cnt, coef=[K1], rate=[k2], algo=self.algo
+        )
         hat += self.aif.cnt * v0
 
         # Interpolate the model prediction at tac sampling time
-        return interp.interp1d(self.aif.time, hat, kind="linear")(self.pet.time)
+        return util.resample(self.aif.time, hat, self.pet.time)
 
     def unit_conv(self, params, art=None):
         """
@@ -685,7 +725,7 @@ class OxyOne(PetModel):
     Defines 1 paramter, 2 Mintun oxygen consumption model
     """
 
-    def __init__(self, aif_oxy, aif_water, pet, flow, k2, vb):
+    def __init__(self, aif_oxy, aif_water, pet, flow, k2, vb, algo="trapz"):
         """
         Initialize model object for oxygen consumpution model
 
@@ -703,6 +743,8 @@ class OxyOne(PetModel):
             Efflux term in 1/sec
         vb: float
             Blood volume in mL/mL
+        algo: str
+            Integration rule for util.exp_conv: "trapz" or "simpson"
         """
 
         # Make sure decay correction status is the same
@@ -710,7 +752,7 @@ class OxyOne(PetModel):
             raise ValueError("Inputs must have the same decay status")
 
         # Add input to model objection
-        PetModel.__init__(self, aif_oxy, pet, name="Oxygen Model")
+        PetModel.__init__(self, aif_oxy, pet, name="Oxygen Model", algo=algo)
         self.aif_oxy = aif_oxy
         self.aif_water = aif_water
         self.flow = flow
@@ -721,25 +763,27 @@ class OxyOne(PetModel):
         # Analytically convolve water and oxygen input functions with the
         # fixed flow*exp(-k2*t) kernel
         conv_water = util.exp_conv(
-            self.aif_water.time, self.aif_water.cnt, coef=[self.flow], rate=[self.k2]
+            self.aif_water.time,
+            self.aif_water.cnt,
+            coef=[self.flow],
+            rate=[self.k2],
+            algo=self.algo,
         )
         conv_oxy = util.exp_conv(
-            self.aif_oxy.time, self.aif_oxy.cnt, coef=[self.flow], rate=[self.k2]
+            self.aif_oxy.time,
+            self.aif_oxy.cnt,
+            coef=[self.flow],
+            rate=[self.k2],
+            algo=self.algo,
         )
 
         # Generate blood volume term
         b_vol = self.ratio * self.vb * self.aif_oxy.cnt
 
         # Interpolate the model terms
-        self.conv_water_i = interp.interp1d(
-            self.aif_oxy.time, conv_water, kind="linear"
-        )(self.pet.time)
-        self.conv_oxy_i = interp.interp1d(self.aif_oxy.time, conv_oxy, kind="linear")(
-            self.pet.time
-        )
-        self.b_vol_i = interp.interp1d(self.aif_oxy.time, b_vol, kind="linear")(
-            self.pet.time
-        )
+        self.conv_water_i = util.resample(self.aif_oxy.time, conv_water, self.pet.time)
+        self.conv_oxy_i = util.resample(self.aif_oxy.time, conv_oxy, self.pet.time)
+        self.b_vol_i = util.resample(self.aif_oxy.time, b_vol, self.pet.time)
 
     def pred(self, oef):
         """
