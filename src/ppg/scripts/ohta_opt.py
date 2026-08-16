@@ -52,6 +52,7 @@ def main():
         "-limit",
         type=float,
         nargs=1,
+        default=[None],
         help="Limit modeling to specified number of seconds past"
         + " bolus arrival. Default is to use entire scan.",
     )
