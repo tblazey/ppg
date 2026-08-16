@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import pytest
 
+from ppg import util
 from ppg.scripts import cbf_opt
 
 from .conftest import replicate_with_noise, save_csv, save_nifti, save_pet_json
@@ -15,9 +16,7 @@ def _build_dataset(tmp_path, spatial_shape):
     t = np.arange(0, 100, 2.0)
     aif_cnt = 100.0 * t * np.exp(-t / 20.0) + 5.0
 
-    kernel_time = t - t[0]
-    kernel = TRUE_K1 * np.exp(-TRUE_K2 * kernel_time)
-    pet_cnt = np.convolve(aif_cnt, kernel)[0 : t.shape[0]] * 2.0
+    pet_cnt = util.exp_conv(t, aif_cnt, coef=[TRUE_K1], rate=[TRUE_K2])
 
     aif_path = save_csv(tmp_path / "aif.csv", t, aif_cnt)
     json_path = save_pet_json(

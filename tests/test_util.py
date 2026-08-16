@@ -105,6 +105,69 @@ def test_conv_matrix_with_padding_is_larger():
     assert c_mat.shape == (4, 4)
 
 
+# ---- exp_conv ---------------------------------------------------------
+
+
+def test_exp_conv_matches_closed_form_single_exponential():
+    # Ca(t) = A*exp(-a*t) convolved with coef*exp(-rate*t) has the exact
+    # solution coef*A*(exp(-a*t) - exp(-rate*t)) / (rate - a)
+    A, a = 100.0, 0.03
+    coef, rate = 0.5, 0.05
+
+    t = np.arange(0, 300, 1.0)
+    aif_cnt = A * np.exp(-a * t)
+    truth = coef * A * (np.exp(-a * t) - np.exp(-rate * t)) / (rate - a)
+
+    hat = util.exp_conv(t, aif_cnt, coef=[coef], rate=[rate])
+    assert np.allclose(hat, truth, atol=0.05)
+
+
+def test_exp_conv_more_accurate_than_discrete_convolution():
+    A, a = 100.0, 0.03
+    coef, rate = 0.5, 0.05
+
+    t = np.arange(0, 300, 1.0)
+    aif_cnt = A * np.exp(-a * t)
+    truth = coef * A * (np.exp(-a * t) - np.exp(-rate * t)) / (rate - a)
+
+    kernel = coef * np.exp(-rate * t)
+    discrete = np.convolve(aif_cnt, kernel)[0 : t.shape[0]] * 1.0
+    exp_conv_hat = util.exp_conv(t, aif_cnt, coef=[coef], rate=[rate])
+
+    idx = t >= 20.0  # skip the first few samples where both methods are crude
+    discrete_err = np.max(np.abs(discrete[idx] - truth[idx]))
+    exp_conv_err = np.max(np.abs(exp_conv_hat[idx] - truth[idx]))
+    assert exp_conv_err < discrete_err / 10.0
+
+
+def test_exp_conv_handles_nonuniform_sampling():
+    t = np.sort(np.concatenate([np.arange(0, 30, 1.0), np.arange(30, 300, 10.0)]))
+    aif_cnt = 100.0 * t * np.exp(-t / 20.0) + 5.0
+
+    hat = util.exp_conv(t, aif_cnt, coef=[0.5], rate=[0.05])
+    assert hat.shape == t.shape
+    assert np.all(np.isfinite(hat))
+
+
+def test_exp_conv_handles_constant_term():
+    t = np.arange(0, 50, 1.0)
+    aif_cnt = np.full(t.shape[0], 2.0)
+
+    hat = util.exp_conv(t, aif_cnt, coef=[3.0], rate=[0.0])
+    # constant kernel: integral of a constant aif is just 3 * 2 * t
+    assert np.allclose(hat, 3.0 * 2.0 * t, atol=1e-6)
+
+
+def test_exp_conv_sums_multiple_terms():
+    t = np.arange(0, 50, 1.0)
+    aif_cnt = np.full(t.shape[0], 2.0)
+
+    combined = util.exp_conv(t, aif_cnt, coef=[1.5, 0.5], rate=[0.1, 0.2])
+    term_one = util.exp_conv(t, aif_cnt, coef=[1.5], rate=[0.1])
+    term_two = util.exp_conv(t, aif_cnt, coef=[0.5], rate=[0.2])
+    assert np.allclose(combined, term_one + term_two)
+
+
 # ---- time masking / peak finding -----------------------------------------
 
 

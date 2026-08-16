@@ -9,7 +9,6 @@ import scipy.integrate as integ
 import scipy.interpolate as interp
 import scipy.optimize as opt
 from . import util
-from .tac import Tac
 
 
 class PetModel:
@@ -89,9 +88,6 @@ class FdgFour(PetModel):
         PetModel.__init__(self, aif, pet, name="FDG with k4")
         self.plasma = plasma
 
-        # Make time range for kernel
-        self.kernel_time = np.arange(0, self.aif.n * self.aif.samp, self.aif.samp)
-
         # Get plasma version of input function if necessary
         if self.plasma is True:
             self.aif.plasma = (1.071966 - 1.07294e-5 * self.aif.time) * self.aif.cnt
@@ -126,15 +122,14 @@ class FdgFour(PetModel):
         a1 = (k_sum - k_sqrt) / 2.0
         a2 = (k_sum + k_sqrt) / 2.0
 
-        # Compute model exponential terms
-        exp_1 = np.exp(-a1 * self.kernel_time) * (k3 + k4 - a1)
-        exp_2 = np.exp(-a2 * self.kernel_time) * (a2 - k3 - k4)
-
-        # Compute expoential kernel
-        kernel = K1 / (a2 - a1) * (exp_1 + exp_2) * self.aif.samp
-
-        # Compute model prediction
-        hat = (1.0 - vb) * np.convolve(self.aif.plasma, kernel)[0 : self.aif.n]
+        # Analytically convolve the plasma input function with the
+        # exponential kernel K1/(a2-a1) * ((k3+k4-a1)*exp(-a1*t) + (a2-k3-k4)*exp(-a2*t))
+        coef_1 = K1 / (a2 - a1) * (k3 + k4 - a1)
+        coef_2 = K1 / (a2 - a1) * (a2 - k3 - k4)
+        hat = util.exp_conv(
+            self.aif.time, self.aif.plasma, coef=[coef_1, coef_2], rate=[a1, a2]
+        )
+        hat = (1.0 - vb) * hat
 
         # Add in blood volume
         hat += self.aif.cnt * vb
@@ -170,20 +165,21 @@ class FdgFour(PetModel):
         a1 = (k_sum - k_sqrt) / 2.0
         a2 = (k_sum + k_sqrt) / 2.0
 
-        # Compute model exponential terms
-        exp_1 = np.exp(-a1 * self.kernel_time)
-        exp_2 = np.exp(-a2 * self.kernel_time)
-
         # Compute blood volume piece
         c_p = self.aif.cnt * vb
 
-        # Compute kernels for individual compartments
-        kern_1 = K1 / (a2 - a1) * ((k4 - a1) * exp_1 + (a2 - k4) * exp_2)
-        kern_2 = K1 * k3 / (a2 - a1) * (exp_1 - exp_2)
+        # Analytically convolve the plasma input function with the kernel
+        # for each compartment
+        coef_e1 = K1 / (a2 - a1) * (k4 - a1)
+        coef_e2 = K1 / (a2 - a1) * (a2 - k4)
+        c_e = util.exp_conv(
+            self.aif.time, self.aif.plasma, coef=[coef_e1, coef_e2], rate=[a1, a2]
+        )
 
-        # Calculate free and metabolized compartments
-        c_e = np.convolve(self.aif.plasma, kern_1)[0 : self.aif.n] * self.aif.samp
-        c_m = np.convolve(self.aif.plasma, kern_2)[0 : self.aif.n] * self.aif.samp
+        coef_m = K1 * k3 / (a2 - a1)
+        c_m = util.exp_conv(
+            self.aif.time, self.aif.plasma, coef=[coef_m, -coef_m], rate=[a1, a2]
+        )
 
         # Interpolate all the parts
         c_p_i = interp.interp1d(self.aif.time, c_p, kind="linear")(self.pet.time)
@@ -267,9 +263,6 @@ class FdgThree(PetModel):
         PetModel.__init__(self, aif, pet, name="FDG without k4")
         self.plasma = plasma
 
-        # Make time range for kernel
-        self.kernel_time = np.arange(0, self.aif.n * self.aif.samp, self.aif.samp)
-
         # Get plasma version of input function if necessary
         if self.plasma is True:
             self.aif.plasma = (1.071966 - 1.07294e-5 * self.aif.time) * self.aif.cnt
@@ -297,14 +290,15 @@ class FdgThree(PetModel):
         vb = params[3]
         k2 = K1 / params[1] - k3
 
-        # Compute model exponential term
-        exp_1 = np.exp(-(k2 + k3) * self.kernel_time)
-
-        # Compute expoential kernel
-        kernel = ((K1 * exp_1) + (K1 * k3 / (k2 + k3) * (1.0 - exp_1))) * self.aif.samp
-
-        # Compute model prediction
-        hat = (1.0 - vb) * np.convolve(self.aif.plasma, kernel)[0 : self.aif.n]
+        # Analytically convolve the plasma input function with the
+        # exponential kernel K1*exp(-a*t) + C*(1-exp(-a*t)), a=k2+k3,
+        # C=K1*k3/a
+        a = k2 + k3
+        c_const = K1 * k3 / a
+        hat = util.exp_conv(
+            self.aif.time, self.aif.plasma, coef=[c_const, K1 - c_const], rate=[0.0, a]
+        )
+        hat = (1.0 - vb) * hat
 
         # Add in blood volume
         hat += self.aif.cnt * vb
@@ -332,19 +326,17 @@ class FdgThree(PetModel):
         k3 = params[2]
         vb = params[3]
         k2 = K1 / params[1] - k3
-
-        # Compute model exponential terms
-        exp_1 = np.exp(-(k2 + k3) * self.kernel_time)
-        exp_2 = 1.0 - exp_1
+        a = k2 + k3
+        c_const = K1 * k3 / a
 
         # Compute blood volume piece
         c_p = self.aif.cnt * vb
 
-        # Calculate free and metabolized compartments
-        c_e = np.convolve(self.aif.plasma, K1 * exp_1)[0 : self.aif.n] * self.aif.samp
-        c_m = (
-            np.convolve(self.aif.plasma, K1 * k3 / (k2 + k3) * exp_2)[0 : self.aif.n]
-            * self.aif.samp
+        # Analytically convolve the plasma input function with the kernel
+        # for each compartment
+        c_e = util.exp_conv(self.aif.time, self.aif.plasma, coef=[K1], rate=[a])
+        c_m = util.exp_conv(
+            self.aif.time, self.aif.plasma, coef=[c_const, -c_const], rate=[0.0, a]
         )
 
         # Interpolate all the parts
@@ -425,9 +417,6 @@ class FlowTwo(PetModel):
         # Initialize model
         PetModel.__init__(self, aif, pet, name="Flow Model")
 
-        # Make time range for kernel
-        self.kernel_time = np.arange(0, self.aif.n * self.aif.samp, self.aif.samp)
-
     def pred(self, params):
         """
         Generates 2 param, 1 compartment model predictions
@@ -447,12 +436,8 @@ class FlowTwo(PetModel):
         K1 = params[0]
         k2 = params[1]
 
-        # Compute model prediction
-        hat = (
-            K1
-            * np.convolve(self.aif.cnt, np.exp(-k2 * self.kernel_time))[0 : self.aif.n]
-            * self.aif.samp
-        )
+        # Analytically convolve the input function with K1*exp(-k2*t)
+        hat = util.exp_conv(self.aif.time, self.aif.cnt, coef=[K1], rate=[k2])
 
         # Interpolate the model prediction at tac sampling time
         return interp.interp1d(self.aif.time, hat, kind="linear")(self.pet.time)
@@ -500,9 +485,6 @@ class OhtaTwo(PetModel):
         # Initialize model
         PetModel.__init__(self, aif, pet, name="Ohta Two Compartment")
 
-        # Make time range for kernel
-        self.kernel_time = np.arange(0, self.aif.n * self.aif.samp, self.aif.samp)
-
     def pred(self, params):
         """
         Generates predictions for Ohta model
@@ -523,12 +505,8 @@ class OhtaTwo(PetModel):
         k2 = params[1]
         v0 = params[2]
 
-        # Compute model prediction
-        hat = (
-            K1
-            * np.convolve(self.aif.cnt, np.exp(-k2 * self.kernel_time))[0 : self.aif.n]
-            * self.aif.samp
-        )
+        # Analytically convolve the input function with K1*exp(-k2*t)
+        hat = util.exp_conv(self.aif.time, self.aif.cnt, coef=[K1], rate=[k2])
         hat += self.aif.cnt * v0
 
         # Interpolate the model prediction at tac sampling time
@@ -740,20 +718,13 @@ class OxyOne(PetModel):
         self.vb = vb
         self.ratio = 0.85
 
-        # Make kernel object
-        kernel_time = np.arange(
-            0, self.aif_oxy.n * self.aif_oxy.samp, self.aif_oxy.samp
+        # Analytically convolve water and oxygen input functions with the
+        # fixed flow*exp(-k2*t) kernel
+        conv_water = util.exp_conv(
+            self.aif_water.time, self.aif_water.cnt, coef=[self.flow], rate=[self.k2]
         )
-        self.kernel = Tac(kernel_time, self.flow * np.exp(-self.k2 * kernel_time))
-
-        # Generate convolution terms
-        conv_water = (
-            np.convolve(self.aif_water.cnt, self.kernel.cnt)[0 : self.aif_water.n]
-            * self.aif_water.samp
-        )
-        conv_oxy = (
-            np.convolve(self.aif_oxy.cnt, self.kernel.cnt)[0 : self.aif_oxy.n]
-            * self.aif_oxy.samp
+        conv_oxy = util.exp_conv(
+            self.aif_oxy.time, self.aif_oxy.cnt, coef=[self.flow], rate=[self.k2]
         )
 
         # Generate blood volume term

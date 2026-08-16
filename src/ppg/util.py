@@ -7,6 +7,7 @@ Convenience functions for ppg module
 import nibabel as nib
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy.integrate as integ
 import scipy.interpolate as interp
 import scipy.ndimage as nd
 from . import io
@@ -164,6 +165,53 @@ def conv_matrix(kernel, pad=0):
     return c_mat
 
 
+def exp_conv(aif_time, aif_cnt, coef, rate):
+    """
+    Analytically convolves an aif with a sum of decaying exponentials
+
+    For a kernel sum_i coef[i] * exp(-rate[i] * t), evaluates the
+    convolution integral at each point in aif_time by pulling the
+    exponential out of the integral:
+
+        exp(-rate[i] * t) * integral_0^t exp(rate[i] * tau) * aif(tau) dtau
+
+    and computing the remaining integral as a running (cumulative
+    trapezoidal) integral instead of a discrete convolution. Unlike
+    np.convolve, this does not require aif_time to be uniformly sampled.
+
+    Parameters
+    ----------
+    aif_time: array
+        A n length array of aif sampling times
+    aif_cnt: array
+        A n length array of aif counts
+    coef: array
+        Coefficients for each exponential term
+    rate: array
+        Decay rate for each exponential term. A rate of 0 is a valid
+        (constant) term.
+
+    Returns
+    -------
+    hat: array
+        A n length array with the convolved prediction, evaluated at
+        aif_time
+    """
+
+    # Add up the contribution from each exponential term
+    hat = np.zeros_like(aif_time)
+    for c, r in zip(coef, rate):
+        if r == 0:
+            # No reweighting needed for a constant term
+            hat += c * integ.cumulative_trapezoid(aif_cnt, aif_time, initial=0.0)
+        else:
+            weighted = aif_cnt * np.exp(r * aif_time)
+            integral = integ.cumulative_trapezoid(weighted, aif_time, initial=0.0)
+            hat += c * np.exp(-r * aif_time) * integral
+
+    return hat
+
+
 def gen_time_mask(pet, limit=None):
     """
     Generates 1D time mask
@@ -223,10 +271,10 @@ def iida_oxy_aif(aif, delta=20, prod=0.0012):
     )
     aif_shift = aif_func(aif.time - delta)
 
-    # Convolve input function to extract water aif
-    kernel_time = np.arange(0, aif.n, aif.samp)
-    aif_conv = np.convolve(aif_shift, np.exp(-prod * kernel_time))[0 : aif.n]
-    aif_water = Tac(aif.time, prod * aif_conv * aif.samp, dc=True, h_life=122.24)
+    # Analytically convolve the shifted input function with exp(-prod*t)
+    # to extract the water aif
+    aif_conv = exp_conv(aif.time, aif_shift, coef=[1.0], rate=[prod])
+    aif_water = Tac(aif.time, prod * aif_conv, dc=True, h_life=122.24)
 
     # Extract oxygen portion of input function
     aif_oxy = Tac(aif.time, aif.cnt - aif_water.cnt, dc=True, h_life=122.24)
