@@ -6,7 +6,7 @@ import pytest
 import ppg
 from ppg.scripts import oef_opt
 
-from .conftest import replicate_with_noise, save_csv, save_nifti
+from .conftest import replicate_with_noise, save_csv, save_nifti, save_pet_json
 
 TRUE_FLOW = 0.0077  # mL/mL/sec
 TRUE_K2 = 0.0108  # 1/sec
@@ -27,8 +27,9 @@ def _build_dataset(tmp_path, spatial_shape, seed):
     pet_cnt = model_gen.pred(TRUE_OEF)
 
     aif_path = save_csv(tmp_path / "aif.csv", t, aif_cnt)
-    time_path = tmp_path / "time.csv"
-    np.savetxt(time_path, t, delimiter=",", fmt="%.6f")
+    json_path = save_pet_json(
+        tmp_path / "pet.json", t, duration=2.0, radionuclide="15O"
+    )
 
     pet_data = replicate_with_noise(pet_cnt, spatial_shape, seed=seed, rel_scale=1e-3)
     pet_path = save_nifti(tmp_path / "pet.nii.gz", pet_data)
@@ -42,11 +43,11 @@ def _build_dataset(tmp_path, spatial_shape, seed):
     k2_path = save_nifti(tmp_path / "k2.nii.gz", k2_img)
     cbv_path = save_nifti(tmp_path / "cbv.nii.gz", cbv_img)
 
-    return aif_path, pet_path, str(time_path), cbf_path, k2_path, cbv_path
+    return aif_path, pet_path, json_path, cbf_path, k2_path, cbv_path
 
 
 def test_oef_opt_whole_brain_average(tmp_path, monkeypatch):
-    aif_path, pet_path, time_path, cbf_path, k2_path, cbv_path = _build_dataset(
+    aif_path, pet_path, json_path, cbf_path, k2_path, cbv_path = _build_dataset(
         tmp_path, (1, 1, 1), seed=4
     )
     out_prefix = str(tmp_path / "out")
@@ -58,7 +59,7 @@ def test_oef_opt_whole_brain_average(tmp_path, monkeypatch):
             "oef-opt",
             aif_path,
             pet_path,
-            time_path,
+            json_path,
             cbf_path,
             k2_path,
             cbv_path,
@@ -82,7 +83,7 @@ def test_oef_opt_whole_brain_average(tmp_path, monkeypatch):
 
 
 def test_oef_opt_with_ca_and_voxels(tmp_path, monkeypatch):
-    aif_path, pet_path, time_path, cbf_path, k2_path, cbv_path = _build_dataset(
+    aif_path, pet_path, json_path, cbf_path, k2_path, cbv_path = _build_dataset(
         tmp_path, (2, 2, 1), seed=5
     )
     out_prefix = str(tmp_path / "out")
@@ -94,7 +95,7 @@ def test_oef_opt_with_ca_and_voxels(tmp_path, monkeypatch):
             "oef-opt",
             aif_path,
             pet_path,
-            time_path,
+            json_path,
             cbf_path,
             k2_path,
             cbv_path,

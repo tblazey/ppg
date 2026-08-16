@@ -6,35 +6,37 @@ import pytest
 import ppg
 from ppg.scripts import cmr_opt
 
-from .conftest import replicate_with_noise, save_csv, save_nifti
+from .conftest import replicate_with_noise, save_csv, save_nifti, save_pet_json
 
 # plasma=False (i.e. the -wb flag) so the aif isn't run through the
 # whole-blood-to-plasma conversion, keeping the forward simulation simple
 TRUE_THREE = np.array([0.0017, 0.79, 0.001, 0.04])  # K1, vd, k3, vb
 TRUE_FOUR = np.array([0.0017, 0.79, 0.001, 0.00011, 0.04])  # K1, vd, k3, k4, vb
+_F18_HALF_LIFE = ppg.io.RADIONUCLIDE_HALF_LIFE["18F"]
 
 
 def _build_dataset(tmp_path, spatial_shape, true_params, model_cls, seed):
     t = np.arange(0, 200, 4.0)
     aif_cnt = 100.0 * t * np.exp(-t / 40.0) + 5.0
 
-    aif = ppg.Tac(t, aif_cnt, dc=True, h_life=6582.0)
-    dummy_pet = ppg.Tac(t, np.zeros_like(t), dc=True, h_life=6582.0)
+    aif = ppg.Tac(t, aif_cnt, dc=True, h_life=_F18_HALF_LIFE)
+    dummy_pet = ppg.Tac(t, np.zeros_like(t), dc=True, h_life=_F18_HALF_LIFE)
     model = model_cls(aif, dummy_pet, plasma=False)
     pet_cnt = model.pred(true_params)
 
     aif_path = save_csv(tmp_path / "aif.csv", t, aif_cnt)
-    time_path = tmp_path / "time.csv"
-    np.savetxt(time_path, t, delimiter=",", fmt="%.6f")
+    json_path = save_pet_json(
+        tmp_path / "pet.json", t, duration=4.0, radionuclide="18F"
+    )
 
     pet_data = replicate_with_noise(pet_cnt, spatial_shape, seed=seed, rel_scale=1e-3)
     pet_path = save_nifti(tmp_path / "pet.nii.gz", pet_data)
 
-    return aif_path, pet_path, str(time_path)
+    return aif_path, pet_path, json_path
 
 
 def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
-    aif_path, pet_path, time_path = _build_dataset(
+    aif_path, pet_path, json_path = _build_dataset(
         tmp_path, (1, 1, 1), TRUE_THREE, ppg.pet_model.FdgThree, seed=2
     )
     out_prefix = str(tmp_path / "out")
@@ -42,7 +44,7 @@ def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["cmr-opt", aif_path, pet_path, time_path, out_prefix, "-avg", "-wb"],
+        ["cmr-opt", aif_path, pet_path, json_path, out_prefix, "-avg", "-wb"],
     )
     with pytest.raises(SystemExit):
         cmr_opt.main()
@@ -64,7 +66,7 @@ def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
 
 
 def test_cmr_opt_four_compartment_with_ca_and_voxels(tmp_path, monkeypatch):
-    aif_path, pet_path, time_path = _build_dataset(
+    aif_path, pet_path, json_path = _build_dataset(
         tmp_path, (2, 2, 1), TRUE_FOUR, ppg.pet_model.FdgFour, seed=3
     )
     out_prefix = str(tmp_path / "out")
@@ -76,7 +78,7 @@ def test_cmr_opt_four_compartment_with_ca_and_voxels(tmp_path, monkeypatch):
             "cmr-opt",
             aif_path,
             pet_path,
-            time_path,
+            json_path,
             out_prefix,
             "-wb",
             "-k4",

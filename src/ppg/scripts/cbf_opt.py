@@ -28,7 +28,9 @@ def main():
     )
     parser.add_argument("aif", type=str, nargs=1, help="Aif csv file")
     parser.add_argument("pet", type=str, nargs=1, help="4D PET image")
-    parser.add_argument("time", type=str, nargs=1, help="PET timing text file")
+    parser.add_argument(
+        "pet_json", type=str, nargs=1, help="BIDS PET JSON sidecar (*_pet.json)"
+    )
     parser.add_argument("out", type=str, nargs=1, help="Name for file output")
     parser.add_argument(
         "-avg",
@@ -84,16 +86,15 @@ def main():
     par_units = ["mL/hg/min", "1/min", "mL/hg", "NA"]
 
     # Load up all the data
-    aif, pet_hdr, pet_mskd, msk_data, msk_hdr, mean_pet = ppg.util.prep_model(
+    aif, pet_hdr, pet_mskd, msk_data, msk_hdr, mean_pet, h_life = ppg.util.prep_model(
         args.aif[0],
         args.pet[0],
-        args.time[0],
+        args.pet_json[0],
         args.mask[0],
         args.vol[0],
         args.scale[0],
         args.limit[0],
         args.censor[0],
-        122.24,
     )
 
     # Prep for optmization
@@ -176,7 +177,7 @@ def main():
     no_c = 0
     for i in tqdm(range(n_vox)):
         # Construct tac object for current voxel
-        vox_pet = ppg.Tac(mean_pet.time, pet_mskd[i, :], dc=True, h_life=122.24)
+        vox_pet = ppg.Tac(mean_pet.time, pet_mskd[i, :], dc=True, h_life=h_life)
 
         # Make model object for current voxel
         vox_model = ppg.pet_model.FlowTwo(aif, vox_pet)

@@ -330,12 +330,11 @@ def load_mask(msk_path, img_hdr):
 
 def load_pet(
     pet_path,
-    h_life,
+    json_path,
     censor_path=None,
     msk_path=None,
     limit=None,
     scale=1.0 / 0.8657,
-    time_path=None,
     vol_path=None,
 ):
     """
@@ -345,8 +344,9 @@ def load_pet(
     ----------
     pet_path: string
         Path to PET Nifti file
-    h_life: float
-        Half life of tracer
+    json_path: string
+        Path to BIDS PET JSON sidecar (FrameTimesStart, FrameDuration,
+        and TracerRadionuclide fields are used)
     censor_path: string
         Path to file indicating time points to censor
     msk_path: string
@@ -355,8 +355,6 @@ def load_pet(
         Time past bolus to limit analysis to
     scale: float
         Scale factor to convert PET to Well Bq/mL
-    time_path: string
-        Path to timing text file
     vol_path: string
         Path to volume weights
 
@@ -370,6 +368,8 @@ def load_pet(
         A n x 1 array boolean array indication valid (True) voxels
     msk_hdr: Nibabel header
         Header for mask image
+    h_life: float
+        Physical half-life of the tracer, from the JSON sidecar
     """
 
     # Load in pet image header
@@ -378,20 +378,13 @@ def load_pet(
     # Check that pet is 4d
     check_img_dim(pet_hdr, 4)
 
-    # Timing logic
-    if time_path is not None:
-        # Load in pet timing file
-        pet_time = np.loadtxt(time_path, delimiter=",")
+    # Load frame timing and half-life from the BIDS PET JSON sidecar
+    pet_time, h_life = io.load_pet_json(json_path)
 
-        # Make sure we have correct number of times
-        if pet_time.shape[0] < pet_hdr.shape[3]:
-            raise ValueError(
-                f"Timing file {time_path} does not have enough data points"
-            )
-        pet_time = pet_time[0 : pet_hdr.shape[3]]
-    else:
-        # Create frame index timing
-        pet_time = np.arange(pet_hdr.shape[3]) + 1
+    # Make sure we have correct number of times
+    if pet_time.shape[0] < pet_hdr.shape[3]:
+        raise ValueError(f"PET JSON sidecar {json_path} does not have enough frames")
+    pet_time = pet_time[0 : pet_hdr.shape[3]]
 
     # Create or load mask
     msk_data, msk_hdr = load_mask(msk_path, pet_hdr)
@@ -424,7 +417,7 @@ def load_pet(
     mean_tac_mskt = Tac(pet_time[time_msk], mean_pet[time_msk], dc=True, h_life=h_life)
 
     # Return everything we need
-    return pet_hdr, pet_mskt[:, time_msk], msk_data, msk_hdr, mean_tac_mskt
+    return pet_hdr, pet_mskt[:, time_msk], msk_data, msk_hdr, mean_tac_mskt, h_life
 
 
 def load_volume(vol_path, img_hdr, msk_data):
@@ -634,13 +627,12 @@ def natural_spline_basis(x, knots, dot=None):
 def prep_model(
     aif_path,
     pet_path,
-    time_path,
+    json_path,
     msk_path,
     vol_path,
     scale,
     limit,
     censor_path,
-    h_life,
     img_paths=None,
     unif=False,
 ):
@@ -653,8 +645,9 @@ def prep_model(
         Path to aif text file
     pet_path: string
         Path to PET Nifti file
-    time_path: string
-        Path to timing text file
+    json_path: string
+        Path to BIDS PET JSON sidecar (FrameTimesStart, FrameDuration,
+        and TracerRadionuclide fields are used)
     msk_path: string
         Path to mask Nifti file
     vol_path: string
@@ -665,8 +658,6 @@ def prep_model(
         Time past bolus to limit analysis to
     censor_path: string
         Path to file indicating time points to censor
-    h_life: float
-        Half life of tracer
     img_path: list
         List of extra images to load in
     unif: boolean
@@ -686,6 +677,8 @@ def prep_model(
         Header for mask image
     mean_tac_mskt: Tac object
         Tac object containing valid whole-brain PET data and times
+    h_life: float
+        Physical half-life of the tracer, from the JSON sidecar
 
     If img_path is set function will also return:
 
@@ -695,20 +688,19 @@ def prep_model(
         A list containing masked average values for each image
     """
 
-    # Load in aif into tac object
-    aif = io.txt_to_tac(aif_path, dc=True, h_life=h_life, unif=unif)
-
-    # Load in image related data
-    pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt = load_pet(
+    # Load in image related data, including half-life from the JSON sidecar
+    pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, h_life = load_pet(
         pet_path,
-        h_life,
+        json_path,
         censor_path=censor_path,
         msk_path=msk_path,
         limit=limit,
         scale=scale,
-        time_path=time_path,
         vol_path=vol_path,
     )
+
+    # Load in aif into tac object
+    aif = io.txt_to_tac(aif_path, dc=True, h_life=h_life, unif=unif)
 
     # Limit analysis to time points within aif
     time_msk = np.logical_and(
@@ -728,7 +720,7 @@ def prep_model(
     # Logic for calls when we have extra images
     if img_paths is None:
         # Return everything we need
-        return (aif, pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt)
+        return (aif, pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, h_life)
 
     else:
         # Make empty lists
@@ -759,7 +751,17 @@ def prep_model(
             avgs.append(img_avg)
 
         # Return everything with extra images
-        return (aif, pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, imgs, avgs)
+        return (
+            aif,
+            pet_hdr,
+            pet_mskt,
+            msk_data,
+            msk_hdr,
+            mean_tac_mskt,
+            h_life,
+            imgs,
+            avgs,
+        )
 
 
 def tac_plot(tac, hats=None, labels=None, title=None, out_path=None, t_hat=None):

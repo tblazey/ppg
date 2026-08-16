@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import nibabel as nib
 import numpy as np
@@ -6,6 +7,34 @@ import pytest
 
 from ppg import io
 from ppg.tac import Tac
+
+
+def test_load_pet_json_computes_mid_frame_times_and_half_life(tmp_path):
+    path = tmp_path / "pet.json"
+    meta = {
+        "FrameTimesStart": [0.0, 10.0, 20.0],
+        "FrameDuration": [10.0, 10.0, 10.0],
+        "TracerRadionuclide": "18F",
+    }
+    path.write_text(json.dumps(meta))
+
+    frame_times, h_life = io.load_pet_json(str(path))
+
+    assert np.allclose(frame_times, [5.0, 15.0, 25.0])
+    assert h_life == pytest.approx(io.RADIONUCLIDE_HALF_LIFE["18F"])
+
+
+def test_load_pet_json_unknown_radionuclide_raises(tmp_path):
+    path = tmp_path / "pet.json"
+    meta = {
+        "FrameTimesStart": [0.0],
+        "FrameDuration": [10.0],
+        "TracerRadionuclide": "999Xx",
+    }
+    path.write_text(json.dumps(meta))
+
+    with pytest.raises(ValueError):
+        io.load_pet_json(str(path))
 
 
 def test_tac_to_txt_and_back_roundtrip(tmp_path):

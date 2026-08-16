@@ -1,3 +1,5 @@
+import json
+
 import nibabel as nib
 import numpy as np
 
@@ -11,6 +13,19 @@ def save_nifti(path, data, affine=None):
 
 def save_csv(path, time, cnt):
     np.savetxt(path, np.stack((time, cnt), axis=1), delimiter=",", fmt="%.6f")
+    return str(path)
+
+
+def save_pet_json(path, frame_times, duration, radionuclide):
+    """Write a minimal BIDS PET JSON sidecar with the given mid-frame times."""
+
+    meta = {
+        "FrameTimesStart": (np.asarray(frame_times) - duration / 2.0).tolist(),
+        "FrameDuration": [float(duration)] * len(frame_times),
+        "TracerRadionuclide": radionuclide,
+    }
+    with open(path, "w") as json_file:
+        json.dump(meta, json_file)
     return str(path)
 
 

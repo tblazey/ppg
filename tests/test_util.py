@@ -1,3 +1,5 @@
+import json
+
 import nibabel as nib
 import numpy as np
 import pytest
@@ -11,6 +13,18 @@ def _save_nifti(tmp_path, name, data, affine=None):
         affine = np.eye(4)
     path = tmp_path / name
     nib.Nifti1Image(data, affine).to_filename(str(path))
+    return str(path)
+
+
+def _save_pet_json(tmp_path, name, frame_times, duration, radionuclide):
+    path = tmp_path / name
+    meta = {
+        "FrameTimesStart": (np.asarray(frame_times) - duration / 2.0).tolist(),
+        "FrameDuration": [float(duration)] * len(frame_times),
+        "TracerRadionuclide": radionuclide,
+    }
+    with open(path, "w") as json_file:
+        json.dump(meta, json_file)
     return str(path)
 
 
@@ -255,20 +269,31 @@ def test_load_pet_and_prep_model_with_extra_images(tmp_path):
     aif_cnt = np.full(aif_time.shape[0], 10.0)
     np.savetxt(aif_path, np.stack((aif_time, aif_cnt), axis=1), delimiter=",")
 
+    json_path = _save_pet_json(
+        tmp_path,
+        "pet.json",
+        np.arange(1, n_frames + 1, 1.0),
+        duration=1.0,
+        radionuclide="11C",
+    )
+
     result = util.prep_model(
         aif_path=str(aif_path),
         pet_path=pet_path,
-        time_path=None,
+        json_path=json_path,
         msk_path=None,
         vol_path=None,
         scale=1.0,
         limit=None,
         censor_path=None,
-        h_life=1220.0,
         img_paths=[extra_path],
     )
 
-    aif, pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, imgs, avgs = result
+    aif, pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, h_life, imgs, avgs = (
+        result
+    )
+
+    assert h_life == pytest.approx(1220.04)
 
     assert pet_mskt.shape[0] == 8
     assert len(imgs) == 1

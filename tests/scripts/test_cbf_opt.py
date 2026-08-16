@@ -5,7 +5,7 @@ import pytest
 
 from ppg.scripts import cbf_opt
 
-from .conftest import replicate_with_noise, save_csv, save_nifti
+from .conftest import replicate_with_noise, save_csv, save_nifti, save_pet_json
 
 TRUE_K1 = 0.0077
 TRUE_K2 = 0.0108
@@ -20,24 +20,24 @@ def _build_dataset(tmp_path, spatial_shape):
     pet_cnt = np.convolve(aif_cnt, kernel)[0 : t.shape[0]] * 2.0
 
     aif_path = save_csv(tmp_path / "aif.csv", t, aif_cnt)
-    time_path = tmp_path / "time.csv"
-    np.savetxt(time_path, t, delimiter=",", fmt="%.6f")
-    time_path = str(time_path)
+    json_path = save_pet_json(
+        tmp_path / "pet.json", t, duration=2.0, radionuclide="15O"
+    )
 
     # Independent per-voxel noise; see replicate_with_noise's docstring for
     # why identical voxel copies make L-BFGS-B's fit falsely "fail".
     pet_data = replicate_with_noise(pet_cnt, spatial_shape)
     pet_path = save_nifti(tmp_path / "pet.nii.gz", pet_data)
 
-    return aif_path, pet_path, time_path
+    return aif_path, pet_path, json_path
 
 
 def test_cbf_opt_whole_brain_average(tmp_path, monkeypatch):
-    aif_path, pet_path, time_path = _build_dataset(tmp_path, (1, 1, 1))
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, (1, 1, 1))
     out_prefix = str(tmp_path / "out")
 
     monkeypatch.setattr(
-        sys, "argv", ["cbf-opt", aif_path, pet_path, time_path, out_prefix, "-avg"]
+        sys, "argv", ["cbf-opt", aif_path, pet_path, json_path, out_prefix, "-avg"]
     )
     with pytest.raises(SystemExit):
         cbf_opt.main()
@@ -59,11 +59,11 @@ def test_cbf_opt_whole_brain_average(tmp_path, monkeypatch):
 
 
 def test_cbf_opt_voxelwise(tmp_path, monkeypatch):
-    aif_path, pet_path, time_path = _build_dataset(tmp_path, (2, 2, 1))
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, (2, 2, 1))
     out_prefix = str(tmp_path / "out")
 
     monkeypatch.setattr(
-        sys, "argv", ["cbf-opt", aif_path, pet_path, time_path, out_prefix]
+        sys, "argv", ["cbf-opt", aif_path, pet_path, json_path, out_prefix]
     )
     cbf_opt.main()
 

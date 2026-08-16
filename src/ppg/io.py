@@ -9,11 +9,58 @@ import matplotlib
 matplotlib.use("Agg")
 
 # Load needed libraries
+import json
+
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 import scipy.interpolate as interp
 from .tac import Tac
+
+# Physical half-lives (seconds) for common PET radionuclides, keyed by the
+# BIDS TracerRadionuclide convention (e.g. "18F"). Add entries as needed.
+RADIONUCLIDE_HALF_LIFE = {
+    "11C": 1220.04,
+    "13N": 597.9,
+    "15O": 122.24,
+    "18F": 6586.2,
+    "68Ga": 4062.6,
+    "82Rb": 75.0,
+}
+
+
+def load_pet_json(path):
+    """
+    Loads frame timing and radionuclide half-life from a BIDS PET JSON sidecar
+
+    Parameters
+    ----------
+    path: string
+        Path to a BIDS *_pet.json sidecar file. Must contain FrameTimesStart,
+        FrameDuration, and TracerRadionuclide fields.
+
+    Returns
+    -------
+    frame_times: array
+        Mid-frame time for each PET frame, in seconds
+    h_life: float
+        Physical half-life of TracerRadionuclide, in seconds
+    """
+
+    with open(path, "r") as json_file:
+        meta = json.load(json_file)
+
+    starts = np.array(meta["FrameTimesStart"], dtype=float)
+    durations = np.array(meta["FrameDuration"], dtype=float)
+    frame_times = starts + durations / 2.0
+
+    radionuclide = meta["TracerRadionuclide"].replace(" ", "")
+    if radionuclide not in RADIONUCLIDE_HALF_LIFE:
+        raise ValueError(
+            f"Unknown radionuclide {radionuclide}. Add it to io.RADIONUCLIDE_HALF_LIFE."
+        )
+
+    return frame_times, RADIONUCLIDE_HALF_LIFE[radionuclide]
 
 
 def tac_to_txt(tac, path):
