@@ -16,6 +16,7 @@ def _save_nifti(tmp_path, name, data, affine=None):
 
 # ---- count_int ----------------------------------------------------------
 
+
 def test_count_int_matches_analytic_integral():
     time = np.linspace(0, 10, 200)
     counts = np.full(time.shape[0], 3.0)
@@ -48,6 +49,7 @@ def test_count_int_bad_ndim_raises():
 
 # ---- image dimension checks ---------------------------------------------
 
+
 def test_check_img_dim_pass_and_fail(tmp_path):
     path = _save_nifti(tmp_path, "img.nii.gz", np.zeros((2, 2, 2, 5)))
     hdr = nib.load(path)
@@ -69,6 +71,7 @@ def test_comp_img_dim_pass_and_fail(tmp_path):
 
 # ---- conv_matrix ----------------------------------------------------------
 
+
 def test_conv_matrix_matches_manual_construction():
     kernel = np.array([1.0, 2.0, 3.0])
     c_mat = util.conv_matrix(kernel)
@@ -89,6 +92,7 @@ def test_conv_matrix_with_padding_is_larger():
 
 
 # ---- time masking / peak finding -----------------------------------------
+
 
 def test_gen_time_mask_no_limit_is_all_true():
     tac = Tac(np.arange(0, 20, 1.0), np.zeros(20))
@@ -147,6 +151,7 @@ def test_loc_deriv_peak_precedes_curve_peak():
 
 # ---- spline helpers ---------------------------------------------------
 
+
 def test_knot_loc_rejects_too_few_knots():
     with pytest.raises(ValueError):
         util.knot_loc(np.arange(100.0), 2)
@@ -199,6 +204,7 @@ def test_natural_spline_basis_bad_dot_raises():
 
 # ---- to_2d ----------------------------------------------------------------
 
+
 def test_to_2d_reshape():
     arr = np.arange(24.0).reshape(2, 3, 4)
     flat = util.to_2d(arr)
@@ -207,6 +213,7 @@ def test_to_2d_reshape():
 
 
 # ---- iida_oxy_aif -----------------------------------------------------
+
 
 def test_iida_oxy_aif_splits_into_oxygen_and_water(synth_aif):
     aif_oxy, aif_water = util.iida_oxy_aif(synth_aif)
@@ -218,6 +225,7 @@ def test_iida_oxy_aif_splits_into_oxygen_and_water(synth_aif):
 
 
 # ---- image loading pipeline --------------------------------------------
+
 
 def test_load_mask_defaults_to_all_true(tmp_path):
     pet_path = _save_nifti(tmp_path, "pet.nii.gz", np.zeros((2, 2, 2, 5)))

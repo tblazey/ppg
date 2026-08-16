@@ -20,10 +20,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "black>=24"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ppg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.black]
+target-version = ["py310"]

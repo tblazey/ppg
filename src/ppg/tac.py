@@ -3,20 +3,22 @@
 Main Tac module class for ppg module
 """
 
-#Load those libraries
+# Load those libraries
 import numpy as np
 import scipy.interpolate as interp
+
 
 class Tac:
     """
     Class for time activity objects
     """
 
-    def __init__(self, time, cnt, dc=None, h_life=None, 
-                 t_unit='seconds', c_unit='Bq/mL'):
+    def __init__(
+        self, time, cnt, dc=None, h_life=None, t_unit="seconds", c_unit="Bq/mL"
+    ):
         """
         Creates a 1-d time activity boject
-        
+
         Parameters
         ----------
         time: array
@@ -31,22 +33,22 @@ class Tac:
             Time unit
         c_unit: string
             Count unit
-    
+
         Returns
         -------
         tac: object
             A tac model object
         """
 
-        #Make sure input dimensions match
+        # Make sure input dimensions match
         if time.shape[0] != cnt.shape[0]:
-            raise ValueError('Dimension of time and cnt must match')
+            raise ValueError("Dimension of time and cnt must match")
 
-        #Make sure we are only 1d
+        # Make sure we are only 1d
         if time.ndim != 1 or cnt.ndim != 1:
-            raise ValueError('Tac object must be 1-d')
+            raise ValueError("Tac object must be 1-d")
 
-        #Add model parts parts
+        # Add model parts parts
         self.time = time
         self.cnt = cnt
         self.dc = dc
@@ -55,29 +57,27 @@ class Tac:
         self.c_unit = c_unit
         self.t_unit = t_unit
 
-        #Determine if we have uniform sampling
+        # Determine if we have uniform sampling
         diffs = np.diff(self.time)
         if np.allclose(diffs, diffs[0]):
             self.unif = True
             self.samp = diffs[0]
         else:
             self.unif = False
-        
+
     def decay_flip(self):
         """
         Flips the decay status of tac model object
         """
 
         if self.dc is not None and self.h_life is not None:
-        
-            #Remove decay correction
-            dc_factor = np.exp(np.log(2)/self.h_life*self.time)
+            # Remove decay correction
+            dc_factor = np.exp(np.log(2) / self.h_life * self.time)
             if self.dc is True:
                 self.cnt = self.cnt / dc_factor
                 self.dc = False
 
-            #Apply decay correction
+            # Apply decay correction
             else:
                 self.cnt = self.cnt * dc_factor
                 self.dc = True
-

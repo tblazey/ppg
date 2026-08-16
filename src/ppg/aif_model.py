@@ -3,11 +3,12 @@
 Model classes for aif time activity curves in the ppg module
 """
 
-#Load libraries
+# Load libraries
 import numpy as np
 import scipy.interpolate as interp
 
-class AifModel():
+
+class AifModel:
     """
     Class to create generic aif model
     """
@@ -22,7 +23,7 @@ class AifModel():
             Tac object containing aif
         """
 
-        #Add model parameters
+        # Add model parameters
         self.aif = aif
         self.name = name
 
@@ -43,11 +44,12 @@ class AifModel():
             Sum of squares error for model
         """
 
-        #Compute residuals
+        # Compute residuals
         resid = self.aif.cnt - self.pred(params, kernel=kernel)
 
-        #Return error
+        # Return error
         return np.sum(np.power(resid, 2))
+
 
 class FengModel(AifModel):
     """
@@ -64,12 +66,26 @@ class FengModel(AifModel):
             Tac object containing aif
         """
 
-        #Initialize model
-        AifModel.__init__(self, aif, name='Feng Aif Model')
-        self.par_names = ['alpha_1', 'alpha_2', 'alpha_3',
-                          'eig_1', 'eig_2', 'eig_3', 't_zero']
-        self.par_units = ['Bq/mL', 'Bq/mL', 'Bq/mL',
-                          '1/sec', '1/sec', '1/sec', 't_zero']
+        # Initialize model
+        AifModel.__init__(self, aif, name="Feng Aif Model")
+        self.par_names = [
+            "alpha_1",
+            "alpha_2",
+            "alpha_3",
+            "eig_1",
+            "eig_2",
+            "eig_3",
+            "t_zero",
+        ]
+        self.par_units = [
+            "Bq/mL",
+            "Bq/mL",
+            "Bq/mL",
+            "1/sec",
+            "1/sec",
+            "1/sec",
+            "t_zero",
+        ]
 
     def pred(self, params, kernel=None, t_new=None):
         """
@@ -91,7 +107,7 @@ class FengModel(AifModel):
             Array of model predictions
         """
 
-        #Extract parameters
+        # Extract parameters
         alpha_1 = np.exp(params[0])
         alpha_2 = np.exp(params[1])
         alpha_3 = np.exp(params[2])
@@ -100,7 +116,7 @@ class FengModel(AifModel):
         eig_3 = np.exp(params[5])
         t_zero = params[6]
 
-        #Create array to store predictions
+        # Create array to store predictions
         if t_new is None:
             t = self.aif.time
             n = self.aif.n
@@ -113,22 +129,22 @@ class FengModel(AifModel):
         if kernel is not None:
             if kernel.samp != samp:
                 kernel_cnt = interp.interp1d(
-                    kernel.time, kernel.cnt, kind='linear', fill_value='extrapolate'
+                    kernel.time, kernel.cnt, kind="linear", fill_value="extrapolate"
                 )(t)
             else:
                 kernel_cnt = kernel.cnt
 
-        #Ignore values where t is less than t_zero
+        # Ignore values where t is less than t_zero
         t_mask = t > t_zero
         t_shift = t[t_mask] - t_zero
 
-        #Compute model predictions
+        # Compute model predictions
         exp_1 = np.exp(-eig_1 * t_shift)
         f_pred[t_mask] = alpha_1 * t_shift * exp_1
         f_pred[t_mask] += alpha_2 * (np.exp(-eig_2 * t_shift) - exp_1)
         f_pred[t_mask] += alpha_3 * (np.exp(-eig_3 * t_shift) - exp_1)
 
-        #Convolve with kernel if necessary
+        # Convolve with kernel if necessary
         if kernel is not None:
             return np.convolve(f_pred, kernel_cnt)[0:n] * samp
         else:
@@ -152,10 +168,10 @@ class FengModel(AifModel):
             Sum of squares error for model
         """
 
-        #Compute residauls
+        # Compute residauls
         resid = self.aif.cnt - self.pred(params, kernel=kernel)
 
-        #Return error
+        # Return error
         return np.sum(np.power(resid, 2))
 
     def unit_conv(self, params):
@@ -174,11 +190,12 @@ class FengModel(AifModel):
             Feng model parameters in original scale
         """
 
-        #Get parameters back from log land
+        # Get parameters back from log land
         conv_params = np.copy(params)
         conv_params[0:6] = np.exp(conv_params[0:6])
 
         return conv_params
+
 
 class GolishModel(AifModel):
     """
@@ -195,12 +212,10 @@ class GolishModel(AifModel):
             Tac object containing aif
         """
 
-        #Initialize model
-        AifModel.__init__(self, aif, name='Golish Aif Model')
-        self.par_names = ['alpha', 'beta', 'c_max',
-                          'c_zero', 'tau', 't_zero']
-        self.par_units = ['NA', 'sec', 'Bq/mL',
-                          'Bq/mL', 'sec', 'sec']
+        # Initialize model
+        AifModel.__init__(self, aif, name="Golish Aif Model")
+        self.par_names = ["alpha", "beta", "c_max", "c_zero", "tau", "t_zero"]
+        self.par_units = ["NA", "sec", "Bq/mL", "Bq/mL", "sec", "sec"]
 
     def pred(self, params, kernel=None, t_new=None):
         """
@@ -222,7 +237,7 @@ class GolishModel(AifModel):
             Array of model predictions
         """
 
-        #Extract parameters
+        # Extract parameters
         alpha = np.exp(params[0])
         beta = np.exp(params[1])
         c_max = np.exp(params[2])
@@ -230,7 +245,7 @@ class GolishModel(AifModel):
         tau = np.exp(params[4])
         t_zero = params[5]
 
-        #Create array to store predictions
+        # Create array to store predictions
         if t_new is None:
             t = self.aif.time
             n = self.aif.n
@@ -240,25 +255,25 @@ class GolishModel(AifModel):
         samp = t[1] - t[0]
         g_pred = np.zeros(n)
 
-        #Ignore values where t is less than t_zero
+        # Ignore values where t is less than t_zero
         t_mask = t > t_zero
         t_shift = t[t_mask] - t_zero
 
         if kernel is not None:
             if kernel.samp != samp:
                 kernel_cnt = interp.interp1d(
-                    kernel.time, kernel.cnt, kind='linear', fill_value='extrapolate'
+                    kernel.time, kernel.cnt, kind="linear", fill_value="extrapolate"
                 )(t)
             else:
                 kernel_cnt = kernel.cnt
 
-        #Compute model predictions
-        g_one = c_max * np.power(np.exp(1.0) / (alpha*beta) * t_shift, alpha)
-        g_two = np.exp(-t_shift/beta)
-        g_three = c_zero * (1.0 - np.exp(-t_shift/tau))
+        # Compute model predictions
+        g_one = c_max * np.power(np.exp(1.0) / (alpha * beta) * t_shift, alpha)
+        g_two = np.exp(-t_shift / beta)
+        g_three = c_zero * (1.0 - np.exp(-t_shift / tau))
         g_pred[t_mask] = g_one * g_two + g_three
 
-        #Convolve with kernel if necessary
+        # Convolve with kernel if necessary
         if kernel is not None:
             return np.convolve(g_pred, kernel_cnt)[0:n] * samp
         else:
@@ -280,7 +295,7 @@ class GolishModel(AifModel):
             Golish model parameters in original scale
         """
 
-        #Convert parameters back from log land, leaving t_zero untouched
+        # Convert parameters back from log land, leaving t_zero untouched
         conv_params = np.copy(params)
         conv_params[0:5] = np.exp(conv_params[0:5])
 

@@ -37,14 +37,14 @@ def test_flow_two_unit_conv():
     assert lmbda == pytest.approx(cbf / k2 / 100.0)
 
 
-def test_ohta_two_reduces_to_flow_two_when_v0_zero(synth_aif, synth_pet, flow_two_truth):
+def test_ohta_two_reduces_to_flow_two_when_v0_zero(
+    synth_aif, synth_pet, flow_two_truth
+):
     flow = FlowTwo(synth_aif, synth_pet)
     ohta = OhtaTwo(synth_aif, synth_pet)
 
     params = np.concatenate((flow_two_truth, [0.0]))
-    assert np.allclose(
-        ohta.pred(params), flow.pred(flow_two_truth), rtol=1e-6
-    )
+    assert np.allclose(ohta.pred(params), flow.pred(flow_two_truth), rtol=1e-6)
 
 
 def test_ohta_two_unit_conv_with_and_without_art():

@@ -37,5 +37,5 @@ def synth_pet(synth_aif, flow_two_truth):
     K1, k2 = flow_two_truth
     kernel_time = synth_aif.time - synth_aif.time[0]
     kernel = K1 * np.exp(-k2 * kernel_time)
-    pet_cnt = np.convolve(synth_aif.cnt, kernel)[0:synth_aif.n] * synth_aif.samp
+    pet_cnt = np.convolve(synth_aif.cnt, kernel)[0 : synth_aif.n] * synth_aif.samp
     return Tac(synth_aif.time, pet_cnt, dc=True, h_life=1220.0)

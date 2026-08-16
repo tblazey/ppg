@@ -11,11 +11,12 @@ helpers (`io`, `util`).
 pip install -e .
 ```
 
-For running the test suite:
+For running the test suite and formatting:
 
 ```bash
 pip install -e ".[dev]"
 pytest
+black .
 ```
 
 ## Usage
