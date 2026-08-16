@@ -113,6 +113,7 @@ def main():
         minimizer_kwargs={"args": opt_args},
         stepsize=0.1,
         T=0.1,
+        seed=0,
     )
 
     if args.resample is not None:
