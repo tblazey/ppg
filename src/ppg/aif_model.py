@@ -280,8 +280,8 @@ class GolishModel(AifModel):
             Golish model parameters in original scale
         """
 
-        #Convert parameters back from log land
+        #Convert parameters back from log land, leaving t_zero untouched
         conv_params = np.copy(params)
-        conv_params[0:6] = np.exp(conv_params[0:6])
+        conv_params[0:5] = np.exp(conv_params[0:5])
 
         return conv_params
