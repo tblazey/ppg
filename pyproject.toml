@@ -17,10 +17,18 @@ dependencies = [
     "scipy>=1.6",
     "matplotlib>=3.5",
     "nibabel>=4.0",
+    "tqdm>=4.60",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "black>=24"]
+
+[project.scripts]
+cbf-opt = "ppg.scripts.cbf_opt:main"
+cmr-opt = "ppg.scripts.cmr_opt:main"
+ohta-opt = "ppg.scripts.ohta_opt:main"
+aif-fit = "ppg.scripts.aif_fit:main"
+oef-opt = "ppg.scripts.oef_opt:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ppg"]
