@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ppg"
+version = "0.1.0"
+description = "Tools for kinetic modeling of dynamic PET data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Tyler Blazey", email = "blazey@wustl.edu" },
+]
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.6",
+    "matplotlib>=3.5",
+    "nibabel>=4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ppg"]
