@@ -19,5 +19,11 @@ dependencies = [
     "nibabel>=4.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ppg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

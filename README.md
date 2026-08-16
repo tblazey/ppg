@@ -11,6 +11,13 @@ helpers (`io`, `util`).
 pip install -e .
 ```
 
+For running the test suite:
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
 ## Usage
 
 ```python
