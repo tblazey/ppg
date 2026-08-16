@@ -99,11 +99,10 @@ def write_str(string, path):
 
     #Write out string
     try:
-        str_out = open(path, "w")
-        str_out.write(string)
-        str_out.close()
-    except(IOError):
-        raise IOError('Cannot write file'%(path))
+        with open(path, "w") as str_out:
+            str_out.write(string)
+    except IOError:
+        raise IOError('Cannot write file %s'%(path))
     
 def write_args(args, path):
     """
@@ -125,7 +124,7 @@ def write_args(args, path):
                 if len(value) > 0:
                         value = ','.join(map(str, value))
                 else:
-                        value = value[0]
+                        value = ''
         arg_string += '%s: %s\n'%(arg, value)
 
     #Write out arguments string
@@ -148,7 +147,7 @@ def write_pars(pars, names, units, path):
     """
 
     #Make sure dimensions match
-    if len(pars) == len(names) == len(units) is False:
+    if not (len(pars) == len(names) == len(units)):
         raise ValueError('Lengths of pars, names, and units must be the same')
     
     #Convert paramter vector to comma seperated string

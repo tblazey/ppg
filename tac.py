@@ -56,10 +56,10 @@ class Tac:
         self.t_unit = t_unit
 
         #Determine if we have uniform sampling
-        uniq_samps = np.unique(np.round(np.gradient(self.time)))
-        if uniq_samps.shape[0] == 1:
+        diffs = np.diff(self.time)
+        if np.allclose(diffs, diffs[0]):
             self.unif = True
-            self.samp = uniq_samps[0]
+            self.samp = diffs[0]
         else:
             self.unif = False
         

@@ -573,8 +573,8 @@ class OneComp(PetModel):
             self.vol = vol
 
             #Integration of aif and pet
-            self.aif.int = integ.cumtrapz(self.aif.cnt, self.aif.time, initial=0.0)
-            self.pet.int = integ.cumtrapz(self.pet.cnt, self.pet.time, initial=0.0)
+            self.aif.int = integ.cumulative_trapezoid(self.aif.cnt, self.aif.time, initial=0.0)
+            self.pet.int = integ.cumulative_trapezoid(self.pet.cnt, self.pet.time, initial=0.0)
 
             #Create interpolation function for input function and its integral
             self.aif.func_int = interp.interp1d(self.aif.time, self.aif.int, kind='cubic')
@@ -809,12 +809,12 @@ class TwoComp(PetModel):
                 self.aif.scale = 1.0
 
             #Integration of aif and pet
-            self.aif.int = integ.cumtrapz(self.aif.cnt * self.aif.scale, self.aif.time, initial=0.0)
-            self.pet.int = integ.cumtrapz(self.pet.cnt, self.pet.time, initial=0.0)
+            self.aif.int = integ.cumulative_trapezoid(self.aif.cnt * self.aif.scale, self.aif.time, initial=0.0)
+            self.pet.int = integ.cumulative_trapezoid(self.pet.cnt, self.pet.time, initial=0.0)
 
             #Double integrations
-            self.aif.int_dbl = integ.cumtrapz(self.aif.int * self.aif.scale, self.aif.time, initial=0.0)
-            self.pet.int_dbl = integ.cumtrapz(self.pet.int, self.pet.time, initial=0.0)
+            self.aif.int_dbl = integ.cumulative_trapezoid(self.aif.int * self.aif.scale, self.aif.time, initial=0.0)
+            self.pet.int_dbl = integ.cumulative_trapezoid(self.pet.int, self.pet.time, initial=0.0)
 
             #Create aif interpolation functions
             self.aif.func_int = interp.interp1d(self.aif.time, self.aif.int, kind='cubic')

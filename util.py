@@ -79,7 +79,7 @@ def count_int(time, counts, limits):
         raise ValueError('Unexpected number of dimensions during integration')
 
     #Run integration
-    return np.trapz(counts_mskt, time[int_msk], axis=-1)      
+    return np.trapezoid(counts_mskt, time[int_msk], axis=-1)
 
 def check_img_dim(hdr, dim, allow_single=True):
     """
@@ -697,11 +697,14 @@ def prep_model(aif_path, pet_path, time_path, msk_path,
                 msk_data, msk_hdr, mean_tac_mskt)
         
     else:
-    
+
         #Make empty lists
         imgs = []
         avgs = []
-        
+
+        #Get volume weights for averaging
+        vol_mskt, vol_sum = load_volume(vol_path, pet_hdr, msk_data)
+
         #Loop through images
         for i in range(len(img_paths)):
         
@@ -815,7 +818,7 @@ def vox_hist(vox_data, name, unit, out_path=None):
     #Make a voxel histogram
     plt.style.use('ggplot')
     plt.figure(0)
-    plt.hist(vox_data, bins=150, normed=True, edgecolor='black', color='#006BB6')
+    plt.hist(vox_data, bins=150, density=True, edgecolor='black', color='#006BB6')
     plt.xlabel('%s (%s)'%(name, unit), color='black', weight='bold', size=10)
     plt.ylabel('Density', color='black', weight='bold', size=10)
     plt.title('%s Voxel Histogram'%(name), weight='bold')
