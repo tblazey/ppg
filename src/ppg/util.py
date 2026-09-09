@@ -5,9 +5,9 @@ Convenience functions for ppg module
 
 # Load needed libraries
 import nibabel as nib
+import numba as nb
 import numpy as np
 import matplotlib.pyplot as plt
-import scipy.integrate as integ
 import scipy.interpolate as interp
 import scipy.ndimage as nd
 from . import io
@@ -165,13 +165,339 @@ def conv_matrix(kernel, pad=0):
     return c_mat
 
 
-_CUMULATIVE_INTEGRATORS = {
-    "trapz": lambda y, x: integ.cumulative_trapezoid(y, x, initial=0.0),
-    "simpson": lambda y, x: integ.cumulative_simpson(y, x=x, initial=0.0),
-}
+@nb.njit(cache=True)
+def _hat_only_trapz(aif_time, aif_cnt, coef, rate):
+    n = aif_time.shape[0]
+    n_terms = rate.shape[0]
+    hat = np.zeros(n)
+    acc_integral = np.zeros(n_terms)
+    prev_weighted = np.zeros(n_terms)
+
+    for j in range(n_terms):
+        prev_weighted[j] = (
+            aif_cnt[0] * np.exp(rate[j] * aif_time[0]) if rate[j] != 0.0 else aif_cnt[0]
+        )
+
+    for k in range(1, n):
+        dt = aif_time[k] - aif_time[k - 1]
+        for j in range(n_terms):
+            if rate[j] != 0.0:
+                r = rate[j]
+                weighted_k = aif_cnt[k] * np.exp(r * aif_time[k])
+                acc_integral[j] += 0.5 * (weighted_k + prev_weighted[j]) * dt
+                term_k = np.exp(-r * aif_time[k]) * acc_integral[j]
+                prev_weighted[j] = weighted_k
+            else:
+                acc_integral[j] += 0.5 * (aif_cnt[k] + prev_weighted[j]) * dt
+                term_k = acc_integral[j]
+                prev_weighted[j] = aif_cnt[k]
+            hat[k] += coef[j] * term_k
+
+    return hat
 
 
-def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz", deriv=False, hess=False):
+@nb.njit(cache=True)
+def _deriv_trapz(aif_time, aif_cnt, coef, rate):
+    n = aif_time.shape[0]
+    n_terms = rate.shape[0]
+    hat = np.zeros(n)
+    jac = np.zeros((n, 2 * n_terms))
+
+    acc_integral = np.zeros(n_terms)
+    acc_t_integral = np.zeros(n_terms)
+    prev_weighted = np.zeros(n_terms)
+    prev_t_weighted = np.zeros(n_terms)
+
+    for j in range(n_terms):
+        if rate[j] != 0.0:
+            w0 = aif_cnt[0] * np.exp(rate[j] * aif_time[0])
+            prev_weighted[j] = w0
+            prev_t_weighted[j] = aif_time[0] * w0
+        else:
+            prev_weighted[j] = aif_cnt[0]
+
+    for k in range(1, n):
+        dt = aif_time[k] - aif_time[k - 1]
+        for j in range(n_terms):
+            if rate[j] != 0.0:
+                r = rate[j]
+                weighted_k = aif_cnt[k] * np.exp(r * aif_time[k])
+                acc_integral[j] += 0.5 * (weighted_k + prev_weighted[j]) * dt
+
+                t_weighted_k = aif_time[k] * weighted_k
+                acc_t_integral[j] += 0.5 * (t_weighted_k + prev_t_weighted[j]) * dt
+
+                exp_neg_k = np.exp(-r * aif_time[k])
+                term_k = exp_neg_k * acc_integral[j]
+                d_term_k = -aif_time[k] * term_k + exp_neg_k * acc_t_integral[j]
+
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+                jac[k, n_terms + j] = coef[j] * d_term_k
+
+                prev_weighted[j] = weighted_k
+                prev_t_weighted[j] = t_weighted_k
+            else:
+                acc_integral[j] += 0.5 * (aif_cnt[k] + prev_weighted[j]) * dt
+                term_k = acc_integral[j]
+
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+
+                prev_weighted[j] = aif_cnt[k]
+
+    return hat, jac
+
+
+@nb.njit(cache=True)
+def _hess_trapz(aif_time, aif_cnt, coef, rate):
+    n = aif_time.shape[0]
+    n_terms = rate.shape[0]
+    hat = np.zeros(n)
+    jac = np.zeros((n, 2 * n_terms))
+    rate_hess = np.zeros((n, n_terms))
+
+    acc_integral = np.zeros(n_terms)
+    acc_t_integral = np.zeros(n_terms)
+    acc_t2_integral = np.zeros(n_terms)
+    prev_weighted = np.zeros(n_terms)
+    prev_t_weighted = np.zeros(n_terms)
+    prev_t2_weighted = np.zeros(n_terms)
+
+    for j in range(n_terms):
+        if rate[j] != 0.0:
+            w0 = aif_cnt[0] * np.exp(rate[j] * aif_time[0])
+            prev_weighted[j] = w0
+            prev_t_weighted[j] = aif_time[0] * w0
+            prev_t2_weighted[j] = aif_time[0] ** 2 * w0
+        else:
+            prev_weighted[j] = aif_cnt[0]
+
+    for k in range(1, n):
+        dt = aif_time[k] - aif_time[k - 1]
+        for j in range(n_terms):
+            if rate[j] != 0.0:
+                r = rate[j]
+                weighted_k = aif_cnt[k] * np.exp(r * aif_time[k])
+                acc_integral[j] += 0.5 * (weighted_k + prev_weighted[j]) * dt
+
+                t_weighted_k = aif_time[k] * weighted_k
+                acc_t_integral[j] += 0.5 * (t_weighted_k + prev_t_weighted[j]) * dt
+
+                t2_weighted_k = aif_time[k] ** 2 * weighted_k
+                acc_t2_integral[j] += 0.5 * (t2_weighted_k + prev_t2_weighted[j]) * dt
+
+                exp_neg_k = np.exp(-r * aif_time[k])
+                term_k = exp_neg_k * acc_integral[j]
+                d_term_k = -aif_time[k] * term_k + exp_neg_k * acc_t_integral[j]
+                d2_term_k = (
+                    -aif_time[k] * d_term_k
+                    - aif_time[k] * exp_neg_k * acc_t_integral[j]
+                    + exp_neg_k * acc_t2_integral[j]
+                )
+
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+                jac[k, n_terms + j] = coef[j] * d_term_k
+                rate_hess[k, j] = coef[j] * d2_term_k
+
+                prev_weighted[j] = weighted_k
+                prev_t_weighted[j] = t_weighted_k
+                prev_t2_weighted[j] = t2_weighted_k
+            else:
+                acc_integral[j] += 0.5 * (aif_cnt[k] + prev_weighted[j]) * dt
+                term_k = acc_integral[j]
+
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+
+                prev_weighted[j] = aif_cnt[k]
+
+    return hat, jac, rate_hess
+
+
+@nb.njit(cache=True)
+def _cumulative_simpson_1d(y, x, uniform):
+    """
+    Cumulative Simpson's rule integral of y sampled at x, matching
+    scipy.integrate.cumulative_simpson(y, x=x, initial=0.0). Unlike trapz,
+    Simpson's rule isn't a simple running increment -- each sub-integral
+    depends on a trio of points, combined via a forward pass (h1) and a
+    reversed pass (h2), interleaved (Cartwright 2017, eqns 8/10). `uniform`
+    picks the cheaper equal-spacing formula (exact same result when x
+    actually is uniform, just fewer divisions) -- the caller must already
+    know this, since detecting it here would repeat the per-call check
+    this whole compiled path exists to avoid.
+    """
+
+    n = y.shape[0]
+    out = np.zeros(n)
+    if n < 3:
+        acc = 0.0
+        for i in range(1, n):
+            acc += 0.5 * (y[i] + y[i - 1]) * (x[i] - x[i - 1])
+            out[i] = acc
+        return out
+
+    n_sub = n - 2
+    h1 = np.empty(n_sub)
+    h2 = np.empty(n_sub)
+
+    for i in range(n_sub):
+        x21 = x[i + 1] - x[i]
+        x32 = x[i + 2] - x[i + 1]
+        f1 = y[i]
+        f2 = y[i + 1]
+        f3 = y[i + 2]
+        if uniform:
+            h1[i] = x21 / 3.0 * (5.0 * f1 / 4.0 + 2.0 * f2 - f3 / 4.0)
+        else:
+            x31 = x21 + x32
+            x21_x31 = x21 / x31
+            x21_x32 = x21 / x32
+            x21x21_x31x32 = x21_x31 * x21_x32
+            coeff1 = 3.0 - x21_x31
+            coeff2 = 3.0 + x21x21_x31x32 + x21_x31
+            coeff3 = -x21x21_x31x32
+            h1[i] = x21 / 6.0 * (coeff1 * f1 + coeff2 * f2 + coeff3 * f3)
+
+    # backward pass: same formula on the reversed (y, dx) -- swap which
+    # gap plays x21 vs x32 and which point plays f1 vs f3
+    for i in range(n_sub):
+        x21 = x[i + 2] - x[i + 1]
+        x32 = x[i + 1] - x[i]
+        f1 = y[i + 2]
+        f2 = y[i + 1]
+        f3 = y[i]
+        if uniform:
+            h2[i] = x21 / 3.0 * (5.0 * f1 / 4.0 + 2.0 * f2 - f3 / 4.0)
+        else:
+            x31 = x21 + x32
+            x21_x31 = x21 / x31
+            x21_x32 = x21 / x32
+            x21x21_x31x32 = x21_x31 * x21_x32
+            coeff1 = 3.0 - x21_x31
+            coeff2 = 3.0 + x21x21_x31x32 + x21_x31
+            coeff3 = -x21x21_x31x32
+            h2[i] = x21 / 6.0 * (coeff1 * f1 + coeff2 * f2 + coeff3 * f3)
+
+    n_sub_total = n_sub + 1
+    sub = np.empty(n_sub_total)
+    idx = 0
+    while idx < n_sub_total - 1:
+        sub[idx] = h1[idx]
+        idx += 2
+    idx = 1
+    while idx < n_sub_total:
+        sub[idx] = h2[idx - 1]
+        idx += 2
+    sub[n_sub_total - 1] = h2[n_sub - 1]
+
+    acc = 0.0
+    for i in range(n_sub_total):
+        acc += sub[i]
+        out[i + 1] = acc
+
+    return out
+
+
+@nb.njit(cache=True)
+def _hat_only_simpson(aif_time, aif_cnt, coef, rate, uniform):
+    n = aif_time.shape[0]
+    n_terms = rate.shape[0]
+    hat = np.zeros(n)
+
+    for j in range(n_terms):
+        r = rate[j]
+        if r != 0.0:
+            weighted = aif_cnt * np.exp(r * aif_time)
+            integral = _cumulative_simpson_1d(weighted, aif_time, uniform)
+            for k in range(n):
+                hat[k] += coef[j] * np.exp(-r * aif_time[k]) * integral[k]
+        else:
+            integral = _cumulative_simpson_1d(aif_cnt, aif_time, uniform)
+            for k in range(n):
+                hat[k] += coef[j] * integral[k]
+
+    return hat
+
+
+@nb.njit(cache=True)
+def _deriv_simpson(aif_time, aif_cnt, coef, rate, uniform):
+    n = aif_time.shape[0]
+    n_terms = rate.shape[0]
+    hat = np.zeros(n)
+    jac = np.zeros((n, 2 * n_terms))
+
+    for j in range(n_terms):
+        r = rate[j]
+        if r != 0.0:
+            weighted = aif_cnt * np.exp(r * aif_time)
+            integral = _cumulative_simpson_1d(weighted, aif_time, uniform)
+            t_weighted = aif_time * weighted
+            t_integral = _cumulative_simpson_1d(t_weighted, aif_time, uniform)
+
+            for k in range(n):
+                exp_neg_k = np.exp(-r * aif_time[k])
+                term_k = exp_neg_k * integral[k]
+                d_term_k = -aif_time[k] * term_k + exp_neg_k * t_integral[k]
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+                jac[k, n_terms + j] = coef[j] * d_term_k
+        else:
+            integral = _cumulative_simpson_1d(aif_cnt, aif_time, uniform)
+            for k in range(n):
+                term_k = integral[k]
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+
+    return hat, jac
+
+
+@nb.njit(cache=True)
+def _hess_simpson(aif_time, aif_cnt, coef, rate, uniform):
+    n = aif_time.shape[0]
+    n_terms = rate.shape[0]
+    hat = np.zeros(n)
+    jac = np.zeros((n, 2 * n_terms))
+    rate_hess = np.zeros((n, n_terms))
+
+    for j in range(n_terms):
+        r = rate[j]
+        if r != 0.0:
+            weighted = aif_cnt * np.exp(r * aif_time)
+            integral = _cumulative_simpson_1d(weighted, aif_time, uniform)
+            t_weighted = aif_time * weighted
+            t_integral = _cumulative_simpson_1d(t_weighted, aif_time, uniform)
+            t2_weighted = aif_time**2 * weighted
+            t2_integral = _cumulative_simpson_1d(t2_weighted, aif_time, uniform)
+
+            for k in range(n):
+                exp_neg_k = np.exp(-r * aif_time[k])
+                term_k = exp_neg_k * integral[k]
+                d_term_k = -aif_time[k] * term_k + exp_neg_k * t_integral[k]
+                d2_term_k = (
+                    -aif_time[k] * d_term_k
+                    - aif_time[k] * exp_neg_k * t_integral[k]
+                    + exp_neg_k * t2_integral[k]
+                )
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+                jac[k, n_terms + j] = coef[j] * d_term_k
+                rate_hess[k, j] = coef[j] * d2_term_k
+        else:
+            integral = _cumulative_simpson_1d(aif_cnt, aif_time, uniform)
+            for k in range(n):
+                term_k = integral[k]
+                hat[k] += coef[j] * term_k
+                jac[k, j] = term_k
+
+    return hat, jac, rate_hess
+
+
+def exp_conv(
+    aif_time, aif_cnt, coef, rate, algo="trapz", deriv=False, hess=False, uniform=False
+):
     """
     Analytically convolves an aif with a sum of decaying exponentials
 
@@ -215,6 +541,14 @@ def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz", deriv=False, hess=Fals
         partial (d/d(coef[i])d(coef[j]), d/d(rate[i])d(rate[j]) for i != j)
         is exactly zero since each term only depends on its own coef/rate,
         so this is the only one worth computing.
+    uniform: bool
+        Only used when algo is "simpson" -- whether aif_time is evenly
+        spaced, which lets the (mathematically equivalent) cheaper
+        equal-interval Simpson's rule formula be used instead of the
+        general one. Not autodetected here, since aif_time is fixed for
+        the life of the caller (e.g. a PetModel instance) and this is
+        called on every optimizer iteration -- the caller should detect it
+        once (see util.is_uniform_grid) and pass the result in.
 
     Returns
     -------
@@ -231,56 +565,63 @@ def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz", deriv=False, hess=Fals
         d^2(hat)/d(rate[i])^2 (zero for a rate of 0).
     """
 
-    if algo not in _CUMULATIVE_INTEGRATORS:
+    if algo not in ("trapz", "simpson"):
         raise ValueError(f"algo must be 'trapz' or 'simpson', got {algo!r}")
     if hess and not deriv:
         raise ValueError("hess=True requires deriv=True")
-    cumulative = _CUMULATIVE_INTEGRATORS[algo]
 
-    # Add up the contribution from each exponential term
-    hat = np.zeros_like(aif_time)
-    if deriv:
-        jac = np.zeros((aif_time.shape[0], 2 * len(rate)))
-    if hess:
-        rate_hess = np.zeros((aif_time.shape[0], len(rate)))
+    coef_arr = np.asarray(coef, dtype=np.float64)
+    rate_arr = np.asarray(rate, dtype=np.float64)
 
-    for i, (c, r) in enumerate(zip(coef, rate)):
-        if r == 0:
-            # No reweighting needed for a constant term; it has no rate to
-            # differentiate with respect to, so jac/rate_hess's rate
-            # columns stay 0 for it
-            term = cumulative(aif_cnt, aif_time)
-            hat += c * term
-            if deriv:
-                jac[:, i] = term
-        else:
-            weighted = aif_cnt * np.exp(r * aif_time)
-            integral = cumulative(weighted, aif_time)
-            exp_neg = np.exp(-r * aif_time)
-            term = exp_neg * integral
-            hat += c * term
-            if deriv:
-                t_integral = cumulative(aif_time * weighted, aif_time)
-                d_term = -aif_time * term + exp_neg * t_integral
-                jac[:, i] = term
-                jac[:, len(rate) + i] = c * d_term
-                if hess:
-                    t2_integral = cumulative(np.power(aif_time, 2) * weighted, aif_time)
-                    d2_term = (
-                        -aif_time * d_term
-                        - aif_time * exp_neg * t_integral
-                        + exp_neg * t2_integral
-                    )
-                    rate_hess[:, i] = c * d2_term
+    if algo == "trapz":
+        if hess:
+            return _hess_trapz(aif_time, aif_cnt, coef_arr, rate_arr)
+        if deriv:
+            return _deriv_trapz(aif_time, aif_cnt, coef_arr, rate_arr)
+        return _hat_only_trapz(aif_time, aif_cnt, coef_arr, rate_arr)
 
     if hess:
-        return hat, jac, rate_hess
+        return _hess_simpson(aif_time, aif_cnt, coef_arr, rate_arr, uniform)
     if deriv:
-        return hat, jac
-    return hat
+        return _deriv_simpson(aif_time, aif_cnt, coef_arr, rate_arr, uniform)
+    return _hat_only_simpson(aif_time, aif_cnt, coef_arr, rate_arr, uniform)
 
 
-def resample(time, cnt, new_time):
+def is_same_grid(time, new_time):
+    """
+    Checks whether two sampling time arrays are identical
+
+    Parameters
+    ----------
+    time: array
+    new_time: array
+
+    Returns
+    -------
+    bool
+    """
+
+    return time.shape == new_time.shape and np.array_equal(time, new_time)
+
+
+def is_uniform_grid(time):
+    """
+    Checks whether a sampling time array is evenly spaced
+
+    Parameters
+    ----------
+    time: array
+
+    Returns
+    -------
+    bool
+    """
+
+    dt = np.diff(time)
+    return dt.shape[0] == 0 or bool(np.allclose(dt, dt[0]))
+
+
+def resample(time, cnt, new_time, same_grid=None):
     """
     Linearly resamples cnt from time onto new_time
 
@@ -296,6 +637,12 @@ def resample(time, cnt, new_time):
         A n length array of values sampled at time
     new_time: array
         Times to resample cnt onto
+    same_grid: bool, optional
+        If given, skips the equality check and uses this instead to decide
+        whether interpolation is needed. Lets a caller that repeats the
+        same (time, new_time) pair across many calls (e.g. a PetModel
+        instance, whose aif/pet grids are fixed after construction)
+        compute the check once instead of on every call.
 
     Returns
     -------
@@ -303,7 +650,10 @@ def resample(time, cnt, new_time):
         cnt resampled onto new_time
     """
 
-    if time.shape == new_time.shape and np.array_equal(time, new_time):
+    if same_grid is None:
+        same_grid = is_same_grid(time, new_time)
+
+    if same_grid:
         return cnt
 
     return interp.interp1d(time, cnt, kind="linear")(new_time)

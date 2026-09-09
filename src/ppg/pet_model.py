@@ -16,7 +16,9 @@ class PetModel:
     Defines generic PET model class
     """
 
-    def __init__(self, aif, pet, name=None, algo="trapz"):
+    def __init__(
+        self, aif, pet, name=None, algo="trapz", same_grid=None, uniform_grid=None
+    ):
         """
         Initialize generic PET model
 
@@ -31,6 +33,20 @@ class PetModel:
             (default, fast) or "simpson" (more accurate, ~3-4x slower per
             call -- worth it for a single whole-brain fit, usually not
             worth it inside a per-voxel optimization loop)
+        same_grid: bool, optional
+            Whether aif and pet share a time grid (so util.resample can
+            skip interpolating). aif/pet are fixed for the life of the
+            model, so this is a loop-invariant -- by default it's detected
+            once here instead of on every resample call inside pred(), but
+            a caller that's about to construct many models sharing the
+            same aif/pet time grids (e.g. a per-voxel fitting loop, where
+            every voxel's Tac is on the same frame grid) can detect it
+            once itself and pass the result in here, to skip re-detecting
+            it on every construction.
+        uniform_grid: bool, optional
+            Whether aif.time is evenly spaced, which lets util.exp_conv's
+            "simpson" algo use a cheaper formula. Same rationale/caller
+            pattern as same_grid.
         """
 
         # Make sure decay correction status is the same
@@ -42,6 +58,14 @@ class PetModel:
         self.pet = pet
         self.name = name
         self.algo = algo
+
+        if same_grid is None:
+            same_grid = util.is_same_grid(aif.time, pet.time)
+        self.same_grid = same_grid
+
+        if uniform_grid is None:
+            uniform_grid = util.is_uniform_grid(aif.time)
+        self.uniform_grid = uniform_grid
 
     def cost(self, params, deriv=False, hess=False):
         """
@@ -212,7 +236,16 @@ class Fdg(PetModel):
     K1, k2, k3, k4.
     """
 
-    def __init__(self, aif, pet, k4=False, hct=None, algo="trapz"):
+    def __init__(
+        self,
+        aif,
+        pet,
+        k4=False,
+        hct=None,
+        algo="trapz",
+        same_grid=None,
+        uniform_grid=None,
+    ):
         """
         Initialize model object for two compartment model
 
@@ -233,11 +266,23 @@ class Fdg(PetModel):
             no conversion is applied.
         algo: str
             Integration rule for util.exp_conv: "trapz" or "simpson"
+        same_grid: bool, optional
+            See PetModel.__init__
+        uniform_grid: bool, optional
+            See PetModel.__init__
         """
 
         # Add input to model objection
         name = "FDG with k4" if k4 is True else "FDG without k4"
-        PetModel.__init__(self, aif, pet, name=name, algo=algo)
+        PetModel.__init__(
+            self,
+            aif,
+            pet,
+            name=name,
+            algo=algo,
+            same_grid=same_grid,
+            uniform_grid=uniform_grid,
+        )
         self.k4 = k4
         self.hct = hct
 
@@ -323,6 +368,7 @@ class Fdg(PetModel):
                 coef=[alpha1, alpha2],
                 rate=[beta1, beta2],
                 algo=self.algo,
+                uniform=self.uniform_grid,
                 deriv=True,
                 hess=True,
             )
@@ -333,6 +379,7 @@ class Fdg(PetModel):
                 coef=[alpha1, alpha2],
                 rate=[beta1, beta2],
                 algo=self.algo,
+                uniform=self.uniform_grid,
                 deriv=True,
             )
         else:
@@ -342,10 +389,13 @@ class Fdg(PetModel):
                 coef=[alpha1, alpha2],
                 rate=[beta1, beta2],
                 algo=self.algo,
+                uniform=self.uniform_grid,
             )
 
         hat_full = (1.0 - vb) * hat0 + self.aif.cnt * vb
-        hat = util.resample(self.aif.time, hat_full, self.pet.time)
+        hat = util.resample(
+            self.aif.time, hat_full, self.pet.time, same_grid=self.same_grid
+        )
 
         if deriv is False:
             return hat
@@ -360,7 +410,12 @@ class Fdg(PetModel):
         jac_full[:, -1] = self.aif.cnt - hat0
         jac = np.stack(
             [
-                util.resample(self.aif.time, jac_full[:, i], self.pet.time)
+                util.resample(
+                    self.aif.time,
+                    jac_full[:, i],
+                    self.pet.time,
+                    same_grid=self.same_grid,
+                )
                 for i in range(n_par)
             ],
             axis=1,
@@ -393,7 +448,10 @@ class Fdg(PetModel):
             for j in range(i, n_par):
                 if np.any(hess_full[:, i, j] != 0.0):
                     resampled = util.resample(
-                        self.aif.time, hess_full[:, i, j], self.pet.time
+                        self.aif.time,
+                        hess_full[:, i, j],
+                        self.pet.time,
+                        same_grid=self.same_grid,
                     )
                     hess_out[:, i, j] = resampled
                     hess_out[:, j, i] = resampled
@@ -422,8 +480,12 @@ class Fdg(PetModel):
 
         # Resample the input functions onto the pet sampling grid, since y
         # is only observed there
-        cp = util.resample(self.aif.time, self.aif.plasma, self.pet.time)
-        cb = util.resample(self.aif.time, self.aif.cnt, self.pet.time)
+        cp = util.resample(
+            self.aif.time, self.aif.plasma, self.pet.time, same_grid=self.same_grid
+        )
+        cb = util.resample(
+            self.aif.time, self.aif.cnt, self.pet.time, same_grid=self.same_grid
+        )
 
         # Build the design matrix for the (twice-integrated) operational
         # equation: y = theta1*int(cp) + theta2*int2(cp) - theta3*int(y)
@@ -518,6 +580,7 @@ class Fdg(PetModel):
                 coef=[coef_e1, coef_e2],
                 rate=[beta1, beta2],
                 algo=self.algo,
+                uniform=self.uniform_grid,
             )
 
             coef_m = d * k3
@@ -527,6 +590,7 @@ class Fdg(PetModel):
                 coef=[coef_m, -coef_m],
                 rate=[beta1, beta2],
                 algo=self.algo,
+                uniform=self.uniform_grid,
             )
         else:
             # Ce is the full K1=(alpha1+alpha2) exponential; Cm is what's
@@ -537,6 +601,7 @@ class Fdg(PetModel):
                 coef=[alpha1 + alpha2],
                 rate=[beta1],
                 algo=self.algo,
+                uniform=self.uniform_grid,
             )
             c_m = util.exp_conv(
                 self.aif.time,
@@ -544,12 +609,19 @@ class Fdg(PetModel):
                 coef=[alpha2, -alpha2],
                 rate=[0.0, beta1],
                 algo=self.algo,
+                uniform=self.uniform_grid,
             )
 
         # Interpolate all the parts
-        c_p_i = util.resample(self.aif.time, c_p, self.pet.time)
-        c_e_i = util.resample(self.aif.time, c_e, self.pet.time)
-        c_m_i = util.resample(self.aif.time, c_m, self.pet.time)
+        c_p_i = util.resample(
+            self.aif.time, c_p, self.pet.time, same_grid=self.same_grid
+        )
+        c_e_i = util.resample(
+            self.aif.time, c_e, self.pet.time, same_grid=self.same_grid
+        )
+        c_m_i = util.resample(
+            self.aif.time, c_m, self.pet.time, same_grid=self.same_grid
+        )
 
         # Return list with components
         return np.stack((c_p_i, c_e_i * (1.0 - vb), c_m_i * (1.0 - vb)), axis=1)
@@ -618,7 +690,7 @@ class FlowTwo(PetModel):
     Defines 2 paramter, 1 compartment blood flow model
     """
 
-    def __init__(self, aif, pet, algo="trapz"):
+    def __init__(self, aif, pet, algo="trapz", same_grid=None, uniform_grid=None):
         """
         Initialize model object for two compartment model
 
@@ -630,10 +702,22 @@ class FlowTwo(PetModel):
             Tac object containing the pet data
         algo: str
             Integration rule for util.exp_conv: "trapz" or "simpson"
+        same_grid: bool, optional
+            See PetModel.__init__
+        uniform_grid: bool, optional
+            See PetModel.__init__
         """
 
         # Initialize model
-        PetModel.__init__(self, aif, pet, name="Flow Model", algo=algo)
+        PetModel.__init__(
+            self,
+            aif,
+            pet,
+            name="Flow Model",
+            algo=algo,
+            same_grid=same_grid,
+            uniform_grid=uniform_grid,
+        )
 
     def pred(self, params):
         """
@@ -656,11 +740,18 @@ class FlowTwo(PetModel):
 
         # Analytically convolve the input function with K1*exp(-k2*t)
         hat = util.exp_conv(
-            self.aif.time, self.aif.cnt, coef=[K1], rate=[k2], algo=self.algo
+            self.aif.time,
+            self.aif.cnt,
+            coef=[K1],
+            rate=[k2],
+            algo=self.algo,
+            uniform=self.uniform_grid,
         )
 
         # Interpolate the model prediction at tac sampling time
-        return util.resample(self.aif.time, hat, self.pet.time)
+        return util.resample(
+            self.aif.time, hat, self.pet.time, same_grid=self.same_grid
+        )
 
     def unit_conv(self, params):
         """
@@ -690,7 +781,7 @@ class OhtaTwo(PetModel):
     Defines Ohta two compartment model
     """
 
-    def __init__(self, aif, pet, algo="trapz"):
+    def __init__(self, aif, pet, algo="trapz", same_grid=None, uniform_grid=None):
         """
         Initialize model object for Ohta model
 
@@ -702,10 +793,22 @@ class OhtaTwo(PetModel):
             Tac object containing the pet data
         algo: str
             Integration rule for util.exp_conv: "trapz" or "simpson"
+        same_grid: bool, optional
+            See PetModel.__init__
+        uniform_grid: bool, optional
+            See PetModel.__init__
         """
 
         # Initialize model
-        PetModel.__init__(self, aif, pet, name="Ohta Two Compartment", algo=algo)
+        PetModel.__init__(
+            self,
+            aif,
+            pet,
+            name="Ohta Two Compartment",
+            algo=algo,
+            same_grid=same_grid,
+            uniform_grid=uniform_grid,
+        )
 
     def pred(self, params):
         """
@@ -729,12 +832,19 @@ class OhtaTwo(PetModel):
 
         # Analytically convolve the input function with K1*exp(-k2*t)
         hat = util.exp_conv(
-            self.aif.time, self.aif.cnt, coef=[K1], rate=[k2], algo=self.algo
+            self.aif.time,
+            self.aif.cnt,
+            coef=[K1],
+            rate=[k2],
+            algo=self.algo,
+            uniform=self.uniform_grid,
         )
         hat += self.aif.cnt * v0
 
         # Interpolate the model prediction at tac sampling time
-        return util.resample(self.aif.time, hat, self.pet.time)
+        return util.resample(
+            self.aif.time, hat, self.pet.time, same_grid=self.same_grid
+        )
 
     def unit_conv(self, params, art=None):
         """
@@ -909,7 +1019,18 @@ class OxyOne(PetModel):
     Defines 1 paramter, 2 Mintun oxygen consumption model
     """
 
-    def __init__(self, aif_oxy, aif_water, pet, flow, k2, vb, algo="trapz"):
+    def __init__(
+        self,
+        aif_oxy,
+        aif_water,
+        pet,
+        flow,
+        k2,
+        vb,
+        algo="trapz",
+        same_grid=None,
+        uniform_grid=None,
+    ):
         """
         Initialize model object for oxygen consumpution model
 
@@ -929,6 +1050,12 @@ class OxyOne(PetModel):
             Blood volume in mL/mL
         algo: str
             Integration rule for util.exp_conv: "trapz" or "simpson"
+        same_grid: bool, optional
+            See PetModel.__init__
+        uniform_grid: bool, optional
+            See PetModel.__init__. Applied to aif_oxy.time -- aif_water is
+            assumed to share the same time grid (conv_water is resampled
+            using aif_oxy.time below, which is only valid if it does)
         """
 
         # Make sure decay correction status is the same
@@ -936,7 +1063,15 @@ class OxyOne(PetModel):
             raise ValueError("Inputs must have the same decay status")
 
         # Add input to model objection
-        PetModel.__init__(self, aif_oxy, pet, name="Oxygen Model", algo=algo)
+        PetModel.__init__(
+            self,
+            aif_oxy,
+            pet,
+            name="Oxygen Model",
+            algo=algo,
+            same_grid=same_grid,
+            uniform_grid=uniform_grid,
+        )
         self.aif_oxy = aif_oxy
         self.aif_water = aif_water
         self.flow = flow
@@ -952,6 +1087,7 @@ class OxyOne(PetModel):
             coef=[self.flow],
             rate=[self.k2],
             algo=self.algo,
+            uniform=self.uniform_grid,
         )
         conv_oxy = util.exp_conv(
             self.aif_oxy.time,
@@ -959,15 +1095,22 @@ class OxyOne(PetModel):
             coef=[self.flow],
             rate=[self.k2],
             algo=self.algo,
+            uniform=self.uniform_grid,
         )
 
         # Generate blood volume term
         b_vol = self.ratio * self.vb * self.aif_oxy.cnt
 
         # Interpolate the model terms
-        self.conv_water_i = util.resample(self.aif_oxy.time, conv_water, self.pet.time)
-        self.conv_oxy_i = util.resample(self.aif_oxy.time, conv_oxy, self.pet.time)
-        self.b_vol_i = util.resample(self.aif_oxy.time, b_vol, self.pet.time)
+        self.conv_water_i = util.resample(
+            self.aif_oxy.time, conv_water, self.pet.time, same_grid=self.same_grid
+        )
+        self.conv_oxy_i = util.resample(
+            self.aif_oxy.time, conv_oxy, self.pet.time, same_grid=self.same_grid
+        )
+        self.b_vol_i = util.resample(
+            self.aif_oxy.time, b_vol, self.pet.time, same_grid=self.same_grid
+        )
 
     def pred(self, oef):
         """

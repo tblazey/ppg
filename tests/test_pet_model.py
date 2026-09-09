@@ -74,6 +74,31 @@ def test_flow_two_algo_defaults_to_trapz_and_accepts_simpson(
     assert not np.array_equal(trapz_hat, simpson_hat)
 
 
+def test_pet_model_same_grid_and_uniform_grid_autodetect(synth_aif, synth_pet):
+    # synth_aif/synth_pet share a grid, and synth_aif.time is uniform, so
+    # both should autodetect True by default
+    model = FlowTwo(synth_aif, synth_pet)
+    assert model.same_grid is True
+    assert model.uniform_grid is True
+
+
+def test_pet_model_same_grid_and_uniform_grid_override(
+    synth_aif, synth_pet, flow_two_truth
+):
+    # A caller that's already verified the assertion (e.g. cmr_opt.py,
+    # once, before constructing many per-voxel models) can skip
+    # autodetection entirely and pass the flags in directly -- asserting
+    # the (here, correct) values should reproduce the autodetected result
+    default_model = FlowTwo(synth_aif, synth_pet)
+    override_model = FlowTwo(synth_aif, synth_pet, same_grid=True, uniform_grid=True)
+
+    assert override_model.same_grid is True
+    assert override_model.uniform_grid is True
+    assert np.array_equal(
+        default_model.pred(flow_two_truth), override_model.pred(flow_two_truth)
+    )
+
+
 def test_flow_two_unit_conv():
     model = FlowTwo.__new__(FlowTwo)  # unit_conv doesn't touch self
     meas = model.unit_conv(np.array([0.5, 0.05]))

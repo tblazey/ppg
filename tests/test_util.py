@@ -194,6 +194,56 @@ def test_exp_conv_simpson_more_accurate_at_coarse_sampling():
     assert simpson_err < trapz_err / 20.0
 
 
+def test_exp_conv_simpson_uniform_flag_matches_general_on_uniform_grid():
+    # The equal-interval and general Simpson formulas are algebraically
+    # identical when the grid actually is uniform (just a cheaper way to
+    # get there) -- uniform=True must reproduce uniform=False exactly.
+    t = np.arange(0, 300, 1.0)
+    aif_cnt = 100.0 * t * np.exp(-t / 20.0) + 5.0
+
+    general = util.exp_conv(
+        t, aif_cnt, coef=[0.5], rate=[0.05], algo="simpson", uniform=False
+    )
+    equal = util.exp_conv(
+        t, aif_cnt, coef=[0.5], rate=[0.05], algo="simpson", uniform=True
+    )
+    assert np.allclose(general, equal, rtol=1e-10, atol=1e-12)
+
+
+def test_exp_conv_simpson_uniform_flag_is_wrong_on_nonuniform_grid():
+    # Guard against the uniform flag silently becoming a no-op: on a
+    # genuinely irregular grid, asserting uniform=True (which is
+    # incorrect here) must actually change -- and degrade -- the result
+    # relative to the correct general-formula answer.
+    rng = np.random.default_rng(0)
+    t = np.sort(rng.uniform(0, 300, size=60))
+    aif_cnt = 100.0 * t * np.exp(-t / 20.0) + 5.0
+
+    correct = util.exp_conv(
+        t, aif_cnt, coef=[0.5], rate=[0.05], algo="simpson", uniform=False
+    )
+    wrong = util.exp_conv(
+        t, aif_cnt, coef=[0.5], rate=[0.05], algo="simpson", uniform=True
+    )
+    assert not np.allclose(correct, wrong)
+
+
+def test_is_same_grid():
+    t1 = np.arange(0, 10.0)
+    t2 = np.arange(0, 10.0)
+    t3 = np.arange(0, 11.0)
+    assert util.is_same_grid(t1, t2) is True
+    assert util.is_same_grid(t1, t3) is False
+    assert util.is_same_grid(t1, t1 + 1e-9) is False
+
+
+def test_is_uniform_grid():
+    assert util.is_uniform_grid(np.arange(0, 10.0)) is True
+    assert util.is_uniform_grid(np.array([0.0, 1.0, 2.0, 5.0])) is False
+    assert util.is_uniform_grid(np.array([0.0])) is True
+    assert util.is_uniform_grid(np.array([0.0, 3.0])) is True
+
+
 # ---- resample -----------------------------------------------------------
 
 
@@ -232,6 +282,20 @@ def test_resample_mismatched_shapes_interpolates_not_skips():
     result = util.resample(t, cnt, new_t)
     assert result.shape == new_t.shape
     assert np.allclose(result, 2.0 * new_t + 3.0)
+
+
+def test_resample_same_grid_override_takes_precedence():
+    t = np.arange(0, 50, 1.0)
+    cnt = 2.0 * t + 3.0
+    new_t = np.arange(0.5, 49.0, 1.0)  # genuinely different grid
+
+    # Asserting same_grid=True skips interpolation even though the grids
+    # actually differ -- the override is trusted, not verified
+    assert np.array_equal(util.resample(t, cnt, new_t, same_grid=True), cnt)
+
+    # Asserting same_grid=False forces interpolation even on matching grids
+    interpolated = util.resample(t, cnt, t.copy(), same_grid=False)
+    assert np.allclose(interpolated, cnt)
 
 
 # ---- time masking / peak finding -----------------------------------------

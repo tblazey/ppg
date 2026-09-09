@@ -186,9 +186,22 @@ def main():
     else:
         mean_init = np.array([0.000833, 0.000867, 5.75e-05, 0.0022, 0.04])
 
+    # aif/pet's time grids are the same for every voxel (every vox_pet
+    # below is built on mean_pet.time), so detect same_grid/uniform_grid
+    # once here instead of separately for the whole-brain fit and every
+    # one of the (potentially 100k+) per-voxel Fdg instances
+    same_grid = ppg.util.is_same_grid(aif.time, mean_pet.time)
+    uniform_grid = ppg.util.is_uniform_grid(aif.time)
+
     # Setup model
     mean_model = ppg.pet_model.Fdg(
-        aif, mean_pet, k4=args.k4[0], hct=args.hct[0], algo="simpson"
+        aif,
+        mean_pet,
+        k4=args.k4[0],
+        hct=args.hct[0],
+        algo="simpson",
+        same_grid=same_grid,
+        uniform_grid=uniform_grid,
     )
 
     # Setup inits
@@ -305,7 +318,13 @@ def main():
 
         # Make model object for current voxel
         vox_model = ppg.pet_model.Fdg(
-            aif, vox_pet, k4=args.k4[0], hct=args.hct[0], algo=args.algo[0]
+            aif,
+            vox_pet,
+            k4=args.k4[0],
+            hct=args.hct[0],
+            algo=args.algo[0],
+            same_grid=same_grid,
+            uniform_grid=uniform_grid,
         )
 
         # Warm-start from this voxel's own LLS estimate when it's usable
