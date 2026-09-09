@@ -237,6 +237,54 @@ def test_cmr_opt_voxelwise_algo_simpson(tmp_path, monkeypatch):
     assert np.mean(k1_img[k1_img != 0]) == pytest.approx(expected_K1, rel=0.1)
 
 
+def test_cmr_opt_censor_excludes_corrupted_frames(tmp_path, monkeypatch):
+    # Corrupt two frames with a large outlier, then confirm the fit only
+    # recovers K1 well when those exact frame indices are censored --
+    # a real check that -censor removes the intended frames, not just
+    # that the flag parses without crashing.
+    aif_path, pet_path, json_path = _build_dataset(
+        tmp_path, (1, 1, 1), TRUE_THREE, k4=False, seed=4
+    )
+    K1, vd, k3, vb = TRUE_THREE
+    expected_K1 = K1 * 60.0 / 1.05 * 100.0
+
+    corrupted_frames = [5, 10]
+    pet_img = nib.load(pet_path)
+    pet_data = pet_img.get_fdata()
+    pet_data[..., corrupted_frames] *= 20.0
+    corrupted_path = str(tmp_path / "pet_corrupted.nii.gz")
+    nib.Nifti1Image(pet_data, pet_img.affine).to_filename(corrupted_path)
+
+    def fit_k1(out_name, extra_args):
+        out_prefix = tmp_path / out_name
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "cmr-opt",
+                aif_path,
+                corrupted_path,
+                json_path,
+                str(out_prefix),
+                "-avg",
+                *extra_args,
+            ],
+        )
+        with pytest.raises(SystemExit):
+            cmr_opt.main()
+        lines = (tmp_path / f"{out_name}_wb_vals.csv").read_text().strip().split("\n")
+        values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
+        return values["K1"]
+
+    k1_censored = fit_k1(
+        "censored", ["-censor", str(corrupted_frames[0]), str(corrupted_frames[1])]
+    )
+    k1_uncensored = fit_k1("uncensored", [])
+
+    assert k1_censored == pytest.approx(expected_K1, rel=0.1)
+    assert abs(k1_censored - expected_K1) < abs(k1_uncensored - expected_K1)
+
+
 def test_cmr_opt_hct_correction_recovers_k1(tmp_path, monkeypatch):
     aif_path, pet_path, json_path = _build_dataset(
         tmp_path, (1, 1, 1), TRUE_THREE, k4=False, seed=6, hct=0.45

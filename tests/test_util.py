@@ -478,7 +478,7 @@ def test_load_pet_and_prep_model_with_extra_images(tmp_path):
         vol_path=None,
         scale=1.0,
         limit=None,
-        censor_path=None,
+        censor_frames=None,
         img_paths=[extra_path],
     )
 
@@ -492,3 +492,51 @@ def test_load_pet_and_prep_model_with_extra_images(tmp_path):
     assert len(imgs) == 1
     assert len(avgs) == 1
     assert avgs[0] == pytest.approx(5.0)
+
+
+def test_prep_model_censors_specified_frames(tmp_path):
+    shape = (2, 2, 2)
+    n_frames = 10
+
+    # Give every frame a distinct value so a censored frame's value can't
+    # be confused with a kept one
+    pet_data = np.zeros(shape + (n_frames,))
+    for i in range(n_frames):
+        pet_data[..., i] = i + 1.0
+    pet_path = _save_nifti(tmp_path, "pet.nii.gz", pet_data)
+
+    aif_path = tmp_path / "aif.txt"
+    aif_time = np.arange(0, 15, 1.0)
+    aif_cnt = np.full(aif_time.shape[0], 10.0)
+    np.savetxt(aif_path, np.stack((aif_time, aif_cnt), axis=1), delimiter=",")
+
+    json_path = _save_pet_json(
+        tmp_path,
+        "pet.json",
+        np.arange(1, n_frames + 1, 1.0),
+        duration=1.0,
+        radionuclide="11C",
+    )
+
+    censor_frames = [2, 5]  # 0-based -- excludes frame values 3.0 and 6.0
+    result = util.prep_model(
+        aif_path=str(aif_path),
+        pet_path=pet_path,
+        json_path=json_path,
+        msk_path=None,
+        vol_path=None,
+        scale=1.0,
+        limit=None,
+        censor_frames=censor_frames,
+    )
+    aif, pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, h_life = result
+
+    assert pet_mskt.shape[1] == n_frames - len(censor_frames)
+    assert mean_tac_mskt.time.shape[0] == n_frames - len(censor_frames)
+
+    expected_time = np.delete(np.arange(1, n_frames + 1, 1.0), censor_frames)
+    expected_cnt = np.delete(np.arange(1, n_frames + 1, 1.0), censor_frames)
+    assert np.array_equal(mean_tac_mskt.time, expected_time)
+    assert np.array_equal(mean_tac_mskt.cnt, expected_cnt)
+    assert 3.0 not in mean_tac_mskt.cnt
+    assert 6.0 not in mean_tac_mskt.cnt

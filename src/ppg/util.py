@@ -829,7 +829,7 @@ def load_mask(msk_path, img_hdr):
 def load_pet(
     pet_path,
     json_path,
-    censor_path=None,
+    censor_frames=None,
     msk_path=None,
     limit=None,
     scale=1.0 / 0.8657,
@@ -845,8 +845,8 @@ def load_pet(
     json_path: string
         Path to BIDS PET JSON sidecar (FrameTimesStart, FrameDuration,
         and TracerRadionuclide fields are used)
-    censor_path: string
-        Path to file indicating time points to censor
+    censor_frames: array
+        0-based indices of PET frames to exclude
     msk_path: string
         Path to mask Nifti file
     limit: float
@@ -900,12 +900,8 @@ def load_pet(
     time_msk = gen_time_mask(mean_tac, limit=limit)
 
     # Censor logic
-    if censor_path is not None:
-        # Load in censor file
-        censor_msk = np.loadtxt(censor_path)
-
-        # Update time mask to exclude censored time points
-        time_msk = np.logical_and(time_msk, censor_msk == 1)
+    if censor_frames is not None:
+        time_msk[censor_frames] = False
 
     # Make sure we have enough pet data
     if np.sum(time_msk) < 5:
@@ -1130,7 +1126,7 @@ def prep_model(
     vol_path,
     scale,
     limit,
-    censor_path,
+    censor_frames,
     img_paths=None,
     unif=False,
 ):
@@ -1154,8 +1150,8 @@ def prep_model(
         Scale factor to convert PET to Well Bq/mL
     limit: float
         Time past bolus to limit analysis to
-    censor_path: string
-        Path to file indicating time points to censor
+    censor_frames: array
+        0-based indices of PET frames to exclude
     img_path: list
         List of extra images to load in
     unif: boolean
@@ -1190,7 +1186,7 @@ def prep_model(
     pet_hdr, pet_mskt, msk_data, msk_hdr, mean_tac_mskt, h_life = load_pet(
         pet_path,
         json_path,
-        censor_path=censor_path,
+        censor_frames=censor_frames,
         msk_path=msk_path,
         limit=limit,
         scale=scale,

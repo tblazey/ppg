@@ -52,10 +52,11 @@ def main():
     )
     parser.add_argument(
         "-censor",
-        type=str,
-        nargs=1,
-        default=[None],
-        help="Mask of PET time points to remove",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="frame",
+        help="0-based indices of PET frames to exclude (e.g. -censor 3 7 12)",
     )
     parser.add_argument(
         "-limit",
@@ -105,7 +106,7 @@ def main():
         args.vol[0],
         args.scale[0],
         args.limit[0],
-        args.censor[0],
+        args.censor,
     )
 
     # Prep for optmization
