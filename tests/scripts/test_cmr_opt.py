@@ -285,6 +285,53 @@ def test_cmr_opt_censor_excludes_corrupted_frames(tmp_path, monkeypatch):
     assert abs(k1_censored - expected_K1) < abs(k1_uncensored - expected_K1)
 
 
+def test_cmr_opt_censor_aif_removes_corrupted_aif_frames(tmp_path, monkeypatch):
+    # _build_dataset's aif already shares the pet's exact frame grid (an
+    # image-derived input function). Corrupt the aif itself (not the pet)
+    # and confirm: censoring the pet frames alone does nothing useful
+    # (the corrupted aif samples still poison the convolution integral at
+    # every later output point, not just the two matching frames) -- only
+    # -censor_aif, which also drops those frames from the aif, fixes it.
+    aif_path, pet_path, json_path = _build_dataset(
+        tmp_path, (1, 1, 1), TRUE_THREE, k4=False, seed=12
+    )
+    K1, vd, k3, vb = TRUE_THREE
+    expected_K1 = K1 * 60.0 / 1.05 * 100.0
+
+    corrupted_frames = [5, 10]
+    aif_time, aif_cnt = np.loadtxt(aif_path, delimiter=",", unpack=True)
+    aif_cnt[corrupted_frames] *= 20.0
+    corrupted_aif_path = save_csv(tmp_path / "aif_corrupted.csv", aif_time, aif_cnt)
+
+    def fit_k1(out_name, extra_args):
+        out_prefix = tmp_path / out_name
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "cmr-opt",
+                corrupted_aif_path,
+                pet_path,
+                json_path,
+                str(out_prefix),
+                "-avg",
+                *extra_args,
+            ],
+        )
+        with pytest.raises(SystemExit):
+            cmr_opt.main()
+        lines = (tmp_path / f"{out_name}_wb_vals.csv").read_text().strip().split("\n")
+        values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
+        return values["K1"]
+
+    censor_args = ["-censor", str(corrupted_frames[0]), str(corrupted_frames[1])]
+    k1_pet_only = fit_k1("pet_only", censor_args)
+    k1_both = fit_k1("both", censor_args + ["-censor_aif"])
+
+    assert k1_both == pytest.approx(expected_K1, rel=0.1)
+    assert abs(k1_both - expected_K1) < abs(k1_pet_only - expected_K1)
+
+
 def test_cmr_opt_hct_correction_recovers_k1(tmp_path, monkeypatch):
     aif_path, pet_path, json_path = _build_dataset(
         tmp_path, (1, 1, 1), TRUE_THREE, k4=False, seed=6, hct=0.45

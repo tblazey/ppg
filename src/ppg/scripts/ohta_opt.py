@@ -63,6 +63,15 @@ def main():
         help="0-based indices of PET frames to exclude (e.g. -censor 3 7 12)",
     )
     parser.add_argument(
+        "-censor_aif",
+        action="store_const",
+        const=[True],
+        default=[False],
+        help="Also remove -censor's frames from the aif -- for an"
+        + " image-derived input function on the same frame grid as the PET"
+        + " data",
+    )
+    parser.add_argument(
         "-limit",
         type=float,
         nargs=1,
@@ -117,6 +126,7 @@ def main():
         args.scale[0],
         args.limit[0],
         args.censor,
+        censor_aif=args.censor_aif[0],
     )
 
     # Prep for optmization

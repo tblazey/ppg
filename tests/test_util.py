@@ -540,3 +540,66 @@ def test_prep_model_censors_specified_frames(tmp_path):
     assert np.array_equal(mean_tac_mskt.cnt, expected_cnt)
     assert 3.0 not in mean_tac_mskt.cnt
     assert 6.0 not in mean_tac_mskt.cnt
+
+
+def _idaif_dataset(tmp_path, n_frames=10):
+    # An image-derived aif -- sampled on the exact same frame grid as the
+    # PET data, with its own distinct per-frame values
+    shape = (2, 2, 2)
+    pet_data = np.zeros(shape + (n_frames,))
+    for i in range(n_frames):
+        pet_data[..., i] = i + 1.0
+    pet_path = _save_nifti(tmp_path, "pet.nii.gz", pet_data)
+
+    frame_times = np.arange(1, n_frames + 1, 1.0)
+    aif_path = tmp_path / "aif.txt"
+    aif_cnt = (frame_times + 1.0) * 100.0  # distinct from pet_data's values
+    np.savetxt(aif_path, np.stack((frame_times, aif_cnt), axis=1), delimiter=",")
+
+    json_path = _save_pet_json(
+        tmp_path, "pet.json", frame_times, duration=1.0, radionuclide="11C"
+    )
+
+    return str(aif_path), pet_path, json_path, frame_times, aif_cnt
+
+
+def test_prep_model_censor_aif_removes_matching_frames(tmp_path):
+    aif_path, pet_path, json_path, frame_times, aif_cnt = _idaif_dataset(tmp_path)
+
+    censor_frames = [2, 5]
+    aif, *_ = util.prep_model(
+        aif_path=aif_path,
+        pet_path=pet_path,
+        json_path=json_path,
+        msk_path=None,
+        vol_path=None,
+        scale=1.0,
+        limit=None,
+        censor_frames=censor_frames,
+        censor_aif=True,
+    )
+
+    expected_time = np.delete(frame_times, censor_frames)
+    expected_cnt = np.delete(aif_cnt, censor_frames)
+    assert np.array_equal(aif.time, expected_time)
+    assert np.array_equal(aif.cnt, expected_cnt)
+
+
+def test_prep_model_censor_aif_false_leaves_aif_untouched(tmp_path):
+    aif_path, pet_path, json_path, frame_times, aif_cnt = _idaif_dataset(tmp_path)
+
+    # censor_aif defaults to False -- censor_frames should still drop the
+    # matching PET frames, but leave the (image-derived) aif untouched
+    aif, *_ = util.prep_model(
+        aif_path=aif_path,
+        pet_path=pet_path,
+        json_path=json_path,
+        msk_path=None,
+        vol_path=None,
+        scale=1.0,
+        limit=None,
+        censor_frames=[2, 5],
+    )
+
+    assert np.array_equal(aif.time, frame_times)
+    assert np.array_equal(aif.cnt, aif_cnt)

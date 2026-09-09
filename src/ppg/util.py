@@ -1127,6 +1127,7 @@ def prep_model(
     scale,
     limit,
     censor_frames,
+    censor_aif=False,
     img_paths=None,
     unif=False,
 ):
@@ -1152,6 +1153,10 @@ def prep_model(
         Time past bolus to limit analysis to
     censor_frames: array
         0-based indices of PET frames to exclude
+    censor_aif: boolean
+        If True, also removes censor_frames from the aif -- for an
+        image-derived input function, sampled on the same frame grid as
+        the PET data, so a censored PET frame's aif sample is invalid too
     img_path: list
         List of extra images to load in
     unif: boolean
@@ -1195,6 +1200,12 @@ def prep_model(
 
     # Load in aif into tac object
     aif = io.txt_to_tac(aif_path, dc=True, h_life=h_life, unif=unif)
+
+    # For an image-derived aif, censored PET frames are invalid there too
+    if censor_frames is not None and censor_aif is True:
+        aif_keep = np.ones(aif.time.shape[0], dtype=bool)
+        aif_keep[censor_frames] = False
+        aif = Tac(aif.time[aif_keep], aif.cnt[aif_keep], dc=True, h_life=h_life)
 
     # Limit analysis to time points within aif
     time_msk = np.logical_and(

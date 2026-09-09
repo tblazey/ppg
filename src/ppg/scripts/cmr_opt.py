@@ -69,6 +69,15 @@ def main():
         help="0-based indices of PET frames to exclude (e.g. -censor 3 7 12)",
     )
     parser.add_argument(
+        "-censor_aif",
+        action="store_const",
+        const=[True],
+        default=[False],
+        help="Also remove -censor's frames from the aif -- for an"
+        + " image-derived input function on the same frame grid as the PET"
+        + " data",
+    )
+    parser.add_argument(
         "-comps",
         action="store_const",
         const=[True],
@@ -177,6 +186,7 @@ def main():
         args.scale[0],
         None,
         args.censor,
+        censor_aif=args.censor_aif[0],
     )
 
     # Default init, in the alpha/beta parameterization fit by Fdg --
