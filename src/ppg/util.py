@@ -171,7 +171,7 @@ _CUMULATIVE_INTEGRATORS = {
 }
 
 
-def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz"):
+def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz", deriv=False, hess=False):
     """
     Analytically convolves an aif with a sum of decaying exponentials
 
@@ -202,29 +202,81 @@ def exp_conv(aif_time, aif_cnt, coef, rate, algo="trapz"):
         when aif_time is sparsely sampled, but roughly 3-4x slower per call
         -- worth it for a single whole-brain fit, usually not worth it
         inside a per-voxel optimization loop.
+    deriv: bool
+        If True, also return hat's Jacobian with respect to coef and rate --
+        used to build analytical optimizer Jacobians for models whose free
+        parameters are the exponential coefficients/rates themselves (e.g.
+        the FDG models' alpha/beta parameterization), rather than
+        finite-differencing.
+    hess: bool
+        If True (requires deriv=True), also return each term's second
+        derivative with respect to its own rate -- used to build analytical
+        model Hessians for standard-error estimation. Every other second
+        partial (d/d(coef[i])d(coef[j]), d/d(rate[i])d(rate[j]) for i != j)
+        is exactly zero since each term only depends on its own coef/rate,
+        so this is the only one worth computing.
 
     Returns
     -------
     hat: array
         A n length array with the convolved prediction, evaluated at
         aif_time
+    jac: array
+        Only returned if deriv is True. A n x (2*len(rate)) array: columns
+        0:len(rate) are d(hat)/d(coef[i]), columns len(rate):2*len(rate)
+        are d(hat)/d(rate[i]) (zero for a rate of 0, since that term has no
+        rate to differentiate with respect to).
+    rate_hess: array
+        Only returned if hess is True. A n x len(rate) array with
+        d^2(hat)/d(rate[i])^2 (zero for a rate of 0).
     """
 
     if algo not in _CUMULATIVE_INTEGRATORS:
         raise ValueError(f"algo must be 'trapz' or 'simpson', got {algo!r}")
+    if hess and not deriv:
+        raise ValueError("hess=True requires deriv=True")
     cumulative = _CUMULATIVE_INTEGRATORS[algo]
 
     # Add up the contribution from each exponential term
     hat = np.zeros_like(aif_time)
-    for c, r in zip(coef, rate):
+    if deriv:
+        jac = np.zeros((aif_time.shape[0], 2 * len(rate)))
+    if hess:
+        rate_hess = np.zeros((aif_time.shape[0], len(rate)))
+
+    for i, (c, r) in enumerate(zip(coef, rate)):
         if r == 0:
-            # No reweighting needed for a constant term
-            hat += c * cumulative(aif_cnt, aif_time)
+            # No reweighting needed for a constant term; it has no rate to
+            # differentiate with respect to, so jac/rate_hess's rate
+            # columns stay 0 for it
+            term = cumulative(aif_cnt, aif_time)
+            hat += c * term
+            if deriv:
+                jac[:, i] = term
         else:
             weighted = aif_cnt * np.exp(r * aif_time)
             integral = cumulative(weighted, aif_time)
-            hat += c * np.exp(-r * aif_time) * integral
+            exp_neg = np.exp(-r * aif_time)
+            term = exp_neg * integral
+            hat += c * term
+            if deriv:
+                t_integral = cumulative(aif_time * weighted, aif_time)
+                d_term = -aif_time * term + exp_neg * t_integral
+                jac[:, i] = term
+                jac[:, len(rate) + i] = c * d_term
+                if hess:
+                    t2_integral = cumulative(np.power(aif_time, 2) * weighted, aif_time)
+                    d2_term = (
+                        -aif_time * d_term
+                        - aif_time * exp_neg * t_integral
+                        + exp_neg * t2_integral
+                    )
+                    rate_hess[:, i] = c * d2_term
 
+    if hess:
+        return hat, jac, rate_hess
+    if deriv:
+        return hat, jac
     return hat
 
 

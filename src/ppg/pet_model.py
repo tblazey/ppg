@@ -43,7 +43,7 @@ class PetModel:
         self.name = name
         self.algo = algo
 
-    def cost(self, params):
+    def cost(self, params, deriv=False, hess=False):
         """
         Computes cost of model given parameters
 
@@ -51,15 +51,36 @@ class PetModel:
         ----------
         params: array
             A n x 1 array containing model parameters
+        deriv: bool
+            If True, also return the analytical gradient of cost with
+            respect to params, via the model's pred (only implemented by
+            models that support it, e.g. Fdg)
+        hess: bool
+            If True (requires deriv=True), also return the analytical
+            Hessian of cost with respect to params, via the model's pred --
+            used to build a standard-error estimate for the fitted params
 
         Returns
         -------
         cost: float
             Sum of sqaures errors given parameters
+        grad: array
+            Only returned if deriv is True. Gradient of cost wrt params
+        hess: array
+            Only returned if hess is True. Hessian of cost wrt params
         """
 
-        # Get model prediction
-        self.hat = self.pred(params)
+        if hess is True and deriv is False:
+            raise ValueError("hess=True requires deriv=True")
+
+        # Get model prediction, along with its Jacobian/Hessian if
+        # requested
+        if hess is True:
+            self.hat, jac, model_hess = self.pred(params, deriv=True, hess=True)
+        elif deriv is True:
+            self.hat, jac = self.pred(params, deriv=True)
+        else:
+            self.hat = self.pred(params)
 
         # Compute residuals
         if hasattr(self.pet, "mask") is True:
@@ -68,15 +89,130 @@ class PetModel:
             self.resid = self.pet.cnt - self.hat
 
         # Compute sse
-        return np.sum(np.power(self.resid, 2))
+        cost = np.sum(np.power(self.resid, 2))
+
+        if deriv is False:
+            return cost
+
+        grad = -2.0 * self.resid @ jac
+
+        if hess is False:
+            return cost, grad
+
+        # d^2(sse)/d(params)^2 = 2*(J^T J - sum_k(resid_k * model_hess_k))
+        cost_hess = 2.0 * (
+            jac.T @ jac - np.einsum("k,kij->ij", self.resid, model_hess)
+        )
+        return cost, grad, cost_hess
+
+    def se(self, params, unit_conv_kwargs=None):
+        """
+        Estimates standard errors for unit_conv's output parameters via
+        the delta method, propagated from the fit's parameter covariance
+        2*sigma^2*inv(cost's analytical Hessian). Only usable for models
+        whose pred implements hess=True (currently just Fdg).
+
+        Parameters
+        ----------
+        params: array
+            Converged fit parameters
+        unit_conv_kwargs: dict
+            Extra keyword arguments to pass through to unit_conv (e.g.
+            glu, lc)
+
+        Returns
+        -------
+        se: array
+            Standard errors, in the same order/units as unit_conv's
+            output. NaN if the parameter covariance couldn't be estimated
+            (a singular Hessian, e.g. for a degenerate fit)
+        """
+
+        if unit_conv_kwargs is None:
+            unit_conv_kwargs = {}
+
+        base = self.unit_conv(params, **unit_conv_kwargs)
+
+        sse, _, hess = self.cost(params, deriv=True, hess=True)
+        n_par = len(params)
+        sigma_sq = sse / (self.resid.shape[0] - n_par)
+
+        try:
+            cov = 2.0 * sigma_sq * np.linalg.inv(hess)
+        except np.linalg.LinAlgError:
+            return np.full(base.shape[0], np.nan)
+
+        # Propagate to unit_conv's output space via the delta method. A
+        # near-singular Hessian -- common for a weakly identified
+        # parameter, e.g. k4 in the reversible model over a short scan --
+        # can invert to a matrix that isn't quite a valid (positive
+        # semi-definite) covariance, since inv() doesn't raise on a merely
+        # ill-conditioned matrix; propagated through a PSD covariance, no
+        # output's variance can come out negative, so a negative one below
+        # just means that particular output inherited the bad direction --
+        # np.sqrt leaves it (silently) NaN while unaffected outputs still
+        # get a real number.
+        eps = 1e-8
+        jac = np.zeros((base.shape[0], n_par))
+        for i in range(n_par):
+            p_plus = np.array(params, dtype=float)
+            p_plus[i] += eps
+            p_minus = np.array(params, dtype=float)
+            p_minus[i] -= eps
+            jac[:, i] = (
+                self.unit_conv(p_plus, **unit_conv_kwargs)
+                - self.unit_conv(p_minus, **unit_conv_kwargs)
+            ) / (2.0 * eps)
+
+        cov_out = jac @ cov @ jac.T
+        with np.errstate(invalid="ignore"):
+            return np.sqrt(np.diag(cov_out))
 
 
-class FdgFour(PetModel):
+def fdg_ab_to_rates(alpha1, alpha2, beta1, beta2=0.0):
     """
-    Defines 4 parameter, 2 compartment fdg model with blood volume
+    Converts the alpha/beta (coefficient/rate) parameterization fit by Fdg
+    back to physical FDG two-compartment rate constants.
+
+    Parameters
+    ----------
+    alpha1, alpha2, beta1: float
+        Parameterization fit by Fdg
+    beta2: float
+        Second rate, fit by Fdg when k4 is True. Omit (or 0.0) for the no
+        k4 model -- k2*k4=0 and k2+k3+k4=beta1+beta2 both still hold with
+        beta2=0, so the same formula recovers k4=0.0 without a special case.
+
+    Returns
+    -------
+    K1, k2, k3, k4: float
+        Physical rate constants
     """
 
-    def __init__(self, aif, pet, plasma=True, algo="trapz"):
+    K1 = alpha1 + alpha2
+    k2 = (alpha1 * beta1 + alpha2 * beta2) / K1
+    k4 = beta1 * beta2 / k2
+    k3 = beta1 + beta2 - k2 - k4
+
+    return K1, k2, k3, k4
+
+
+class Fdg(PetModel):
+    """
+    Defines the 2 compartment fdg model with blood volume, with or without
+    a k4 (reversible) term
+
+    Fit in the alpha/beta (coefficient/rate) parameterization -- params
+    are [alpha1, alpha2, beta1, beta2, vb] (k4 True) or
+    [alpha1, alpha2, beta1, vb] (k4 False), not the physical rate
+    constants K1/k2/k3/k4. This keeps pred linear in alpha/exponential-in-
+    beta, so the optimizer's Jacobian is a short
+    closed-form expression instead of a finite difference through the
+    physical -> eigenvalue solve. See fdg_ab_to_rates for conversion to
+    K1, k2, k3, k4.
+    """
+
+    def __init__(self, aif, pet, k4=False, hct=None, algo="trapz"):
         """
         Initialize model object for two compartment model
 
@@ -86,68 +222,267 @@ class FdgFour(PetModel):
             Tac object containing the aif data
         pet: Tac object
             Tac object containing the pet data
-        plasma: boolean
-            True converts input function to plasma
+        k4: boolean
+            True fits a k4 (reversible) term; params are then
+            [alpha1, alpha2, beta1, beta2, vb] instead of
+            [alpha1, alpha2, beta1, vb]
+        hct: float
+            Subject hematocrit (0-1). If given, converts the whole-blood
+            aif to plasma (Phelps et al., 1979) for the tissue-uptake
+            term; the blood-volume term always uses whole blood. If None,
+            no conversion is applied.
         algo: str
             Integration rule for util.exp_conv: "trapz" or "simpson"
         """
 
         # Add input to model objection
-        PetModel.__init__(self, aif, pet, name="FDG with k4", algo=algo)
-        self.plasma = plasma
+        name = "FDG with k4" if k4 is True else "FDG without k4"
+        PetModel.__init__(self, aif, pet, name=name, algo=algo)
+        self.k4 = k4
+        self.hct = hct
 
-        # Get plasma version of input function if necessary
-        if self.plasma is True:
-            self.aif.plasma = (1.071966 - 1.07294e-5 * self.aif.time) * self.aif.cnt
+        # Convert whole blood to plasma for the tissue-uptake term if
+        # given a hematocrit; the blood-volume term always uses whole blood
+        if self.hct is not None:
+            t_min = self.aif.time / 60.0
+            rbc_to_plasma = (
+                0.814101
+                + 0.000680 * t_min
+                + 0.103307 * (1.0 - np.exp(-t_min / 50.052431))
+            )
+            self.aif.plasma = self.aif.cnt / (
+                self.hct * rbc_to_plasma + (1.0 - self.hct)
+            )
         else:
             self.aif.plasma = self.aif.cnt
 
-    def pred(self, params):
+    def _split(self, params):
         """
-        Generates predictions for 2 compartment model with k4
+        Splits params into alpha1, alpha2, beta1, beta2, vb, with beta2
+        fixed at 0.0 (the trapped compartment's constant, rate-less term)
+        when this model doesn't fit a k4
+        """
+
+        if self.k4 is True:
+            alpha1, alpha2, beta1, beta2, vb = params
+        else:
+            alpha1, alpha2, beta1, vb = params
+            beta2 = 0.0
+
+        return alpha1, alpha2, beta1, beta2, vb
+
+    def pred(self, params, deriv=False, hess=False):
+        """
+        Generates predictions for the 2 compartment fdg model, optionally
+        along with their Jacobian and Hessian with respect to params.
+
+        Of hat's second partials, only four kinds are ever nonzero (every
+        alpha-alpha, beta-beta cross, and vb-vb partial is exactly 0 since
+        each exponential term only depends on its own coef/rate, and hat
+        is linear in vb): d/dalpha_i d/dbeta_i, d/dbeta_i d/dbeta_i,
+        d/dalpha_i d/dvb, and d/dbeta_i d/dvb. All but the beta_i-beta_i
+        one come straight out of the Jacobian pieces below; the
+        beta_i-beta_i one comes from exp_conv's hess=True output.
 
         Parameters
         ----------
         params: array
-            A 5 x 1 array containing K1, vd, k3, k4, and vb
+            [alpha1, alpha2, beta1, beta2, vb] (k4 True) or
+            [alpha1, alpha2, beta1, vb] (k4 False) -- see fdg_ab_to_rates
+            for the physical rate constants these correspond to
+        deriv: bool
+            If True, also return the Jacobian of hat wrt params
+        hess: bool
+            If True (requires deriv=True), also return the Hessian of hat
+            wrt params
 
         Returns
         -------
         pred: array
             A vector of model predictions at pet times
+        jac: array
+            Only returned if deriv is True. A n_pet x len(params) array
+        hess: array
+            Only returned if hess is True. A n_pet x len(params) x
+            len(params) array
         """
 
-        # Rename params
-        K1 = params[0]
-        k3 = params[2]
-        k4 = params[3]
-        vb = params[4]
-        k2 = K1 / params[1] - k3
+        if hess is True and deriv is False:
+            raise ValueError("hess=True requires deriv=True")
 
-        # Compute alpha terms for model
-        k_sum = k2 + k3 + k4
-        k_sqrt = np.sqrt(np.power(k_sum, 2) - 4.0 * k2 * k4)
-        a1 = (k_sum - k_sqrt) / 2.0
-        a2 = (k_sum + k_sqrt) / 2.0
+        alpha1, alpha2, beta1, beta2, vb = self._split(params)
 
         # Analytically convolve the plasma input function with the
-        # exponential kernel K1/(a2-a1) * ((k3+k4-a1)*exp(-a1*t) + (a2-k3-k4)*exp(-a2*t))
-        coef_1 = K1 / (a2 - a1) * (k3 + k4 - a1)
-        coef_2 = K1 / (a2 - a1) * (a2 - k3 - k4)
-        hat = util.exp_conv(
-            self.aif.time,
-            self.aif.plasma,
-            coef=[coef_1, coef_2],
-            rate=[a1, a2],
-            algo=self.algo,
+        # exponential kernel alpha1*exp(-beta1*t) + alpha2*exp(-beta2*t);
+        # beta2=0 (no k4) makes the second term the trapped compartment's
+        # constant contribution instead of a second exponential
+        if hess is True:
+            hat0, hat0_jac, hat0_rate_hess = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[alpha1, alpha2],
+                rate=[beta1, beta2],
+                algo=self.algo,
+                deriv=True,
+                hess=True,
+            )
+        elif deriv is True:
+            hat0, hat0_jac = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[alpha1, alpha2],
+                rate=[beta1, beta2],
+                algo=self.algo,
+                deriv=True,
+            )
+        else:
+            hat0 = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[alpha1, alpha2],
+                rate=[beta1, beta2],
+                algo=self.algo,
+            )
+
+        hat_full = (1.0 - vb) * hat0 + self.aif.cnt * vb
+        hat = util.resample(self.aif.time, hat_full, self.pet.time)
+
+        if deriv is False:
+            return hat
+
+        # hat0_jac columns are [dalpha1, dalpha2, dbeta1, dbeta2]. When
+        # there's no k4, beta2 isn't a free parameter (it's fixed at 0) so
+        # its always-zero column is dropped.
+        n_par = len(params)
+        n_rate = 4 if self.k4 is True else 3
+        jac_full = np.empty((hat0.shape[0], n_par))
+        jac_full[:, 0:n_rate] = (1.0 - vb) * hat0_jac[:, 0:n_rate]
+        jac_full[:, -1] = self.aif.cnt - hat0
+        jac = np.stack(
+            [
+                util.resample(self.aif.time, jac_full[:, i], self.pet.time)
+                for i in range(n_par)
+            ],
+            axis=1,
         )
-        hat = (1.0 - vb) * hat
 
-        # Add in blood volume
-        hat += self.aif.cnt * vb
+        if hess is False:
+            return hat, jac
 
-        # Interpolate the model prediction at tac sampling time
-        return util.resample(self.aif.time, hat, self.pet.time)
+        # d/dalpha_i d/dvb = -T_i, for both alpha1 and alpha2 regardless of
+        # whether alpha2's rate (beta2) is a fit parameter
+        alpha = (alpha1, alpha2)
+        n_terms = 2 if self.k4 is True else 1  # number of *fit* rate terms
+        beta_idx = 2  # index of beta1 in params -- same for k4 True/False
+        hess_full = np.zeros((hat0.shape[0], n_par, n_par))
+        for i in range(2):
+            hess_full[:, i, -1] = hess_full[:, -1, i] = -hat0_jac[:, i]
+
+        for i in range(n_terms):
+            b = beta_idx + i
+            t_i_prime_scaled = hat0_jac[:, 2 + i]  # = alpha_i * T_i'
+
+            hess_full[:, i, b] = hess_full[:, b, i] = (1.0 - vb) * (
+                t_i_prime_scaled / alpha[i]
+            )
+            hess_full[:, b, b] = (1.0 - vb) * hat0_rate_hess[:, i]
+            hess_full[:, b, -1] = hess_full[:, -1, b] = -t_i_prime_scaled
+
+        hess_out = np.zeros((self.pet.time.shape[0], n_par, n_par))
+        for i in range(n_par):
+            for j in range(i, n_par):
+                if np.any(hess_full[:, i, j] != 0.0):
+                    resampled = util.resample(
+                        self.aif.time, hess_full[:, i, j], self.pet.time
+                    )
+                    hess_out[:, i, j] = resampled
+                    hess_out[:, j, i] = resampled
+
+        return hat, jac, hess_out
+
+    def init_par(self, y):
+        """
+        Computes initial alpha/beta parameter estimates via the linearized
+        operational equation (Feng et al., 1995, IEEE TMI), solved with
+        NNLS. Meant as a per-voxel warm start that's usually much better
+        than reusing a neighboring voxel's converged fit.
+
+        Parameters
+        ----------
+        y: array
+            Observed PET time activity curve, at pet.time sampling
+
+        Returns
+        -------
+        init: array or None
+            [alpha1, alpha2, beta1, beta2, vb] (k4 True) or
+            [alpha1, alpha2, beta1, vb] (k4 False), or None if the
+            linearized solve produced a non-physical result
+        """
+
+        # Resample the input functions onto the pet sampling grid, since y
+        # is only observed there
+        cp = util.resample(self.aif.time, self.aif.plasma, self.pet.time)
+        cb = util.resample(self.aif.time, self.aif.cnt, self.pet.time)
+
+        # Build the design matrix for the (twice-integrated) operational
+        # equation: y = theta1*int(cp) + theta2*int2(cp) - theta3*int(y)
+        # [- theta4*int2(y)] + theta5*cb, with all thetas >= 0
+        int_cp = integ.cumulative_trapezoid(cp, self.pet.time, initial=0.0)
+        int2_cp = integ.cumulative_trapezoid(int_cp, self.pet.time, initial=0.0)
+        int_y = integ.cumulative_trapezoid(y, self.pet.time, initial=0.0)
+
+        if self.k4 is True:
+            int2_y = integ.cumulative_trapezoid(int_y, self.pet.time, initial=0.0)
+            design = np.stack((int_cp, int2_cp, -int_y, -int2_y, cb), axis=1)
+        else:
+            design = np.stack((int_cp, int2_cp, -int_y, cb), axis=1)
+
+        theta, _ = opt.nnls(design, y)
+        theta1, vb = theta[0], theta[-1]
+
+        # theta1 = (1-vb)*K1 -- bail out to None on any non-physical solve
+        if theta1 <= 0 or vb >= 1.0:
+            return None
+
+        # Unlike this model's alpha1/alpha2, theta1 above is scaled by
+        # (1-vb) -- divide it back out to match pred's params
+        K1 = theta1 / (1.0 - vb)
+        k34_sum = theta[1] / theta1
+
+        if self.k4 is True:
+            # theta3 = k2+k3+k4, theta4 = k2*k4
+            disc = np.power(theta[2], 2) - 4.0 * theta[3]
+            if disc < 0:
+                return None
+
+            beta1 = (theta[2] - np.sqrt(disc)) / 2.0
+            beta2 = (theta[2] + np.sqrt(disc)) / 2.0
+            if beta2 - beta1 < 1e-12:
+                return None
+
+            d = K1 / (beta2 - beta1)
+            alpha1 = d * (k34_sum - beta1)
+            alpha2 = d * (beta2 - k34_sum)
+            if alpha1 <= 0 or alpha2 <= 0:
+                return None
+
+            return np.array([alpha1, alpha2, beta1, beta2, vb])
+
+        # theta3 = k2+k3 (=beta1)
+        beta1 = theta[2]
+        if beta1 <= 0:
+            return None
+
+        k3 = k34_sum
+        k2 = beta1 - k3
+        if k2 <= 0:
+            return None
+
+        alpha1 = K1 * k2 / beta1
+        alpha2 = K1 * k3 / beta1
+
+        return np.array([alpha1, alpha2, beta1, vb])
 
     def comp(self, params):
         """
@@ -156,7 +491,8 @@ class FdgFour(PetModel):
         Parameters
         ----------
         params: array
-             A 5 x 1 array containing K1, vd, k3, k4, and vb
+            [alpha1, alpha2, beta1, beta2, vb] (k4 True) or
+            [alpha1, alpha2, beta1, vb] (k4 False)
 
         Returns
         -------
@@ -164,42 +500,51 @@ class FdgFour(PetModel):
            A list containing model component vectors
         """
 
-        # Rename params
-        K1 = params[0]
-        k3 = params[2]
-        k4 = params[3]
-        vb = params[4]
-        k2 = K1 / params[1] - k3
-
-        # Compute alpha terms for model
-        k_sum = k2 + k3 + k4
-        k_sqrt = np.sqrt(np.power(k_sum, 2) - 4.0 * k2 * k4)
-        a1 = (k_sum - k_sqrt) / 2.0
-        a2 = (k_sum + k_sqrt) / 2.0
+        alpha1, alpha2, beta1, beta2, vb = self._split(params)
 
         # Compute blood volume piece
         c_p = self.aif.cnt * vb
 
-        # Analytically convolve the plasma input function with the kernel
-        # for each compartment
-        coef_e1 = K1 / (a2 - a1) * (k4 - a1)
-        coef_e2 = K1 / (a2 - a1) * (a2 - k4)
-        c_e = util.exp_conv(
-            self.aif.time,
-            self.aif.plasma,
-            coef=[coef_e1, coef_e2],
-            rate=[a1, a2],
-            algo=self.algo,
-        )
+        if self.k4 is True:
+            # Analytically convolve the plasma input function with the
+            # kernel for each compartment
+            K1, _, k3, k4 = fdg_ab_to_rates(alpha1, alpha2, beta1, beta2)
+            d = K1 / (beta2 - beta1)
+            coef_e1 = d * (k4 - beta1)
+            coef_e2 = d * (beta2 - k4)
+            c_e = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[coef_e1, coef_e2],
+                rate=[beta1, beta2],
+                algo=self.algo,
+            )
 
-        coef_m = K1 * k3 / (a2 - a1)
-        c_m = util.exp_conv(
-            self.aif.time,
-            self.aif.plasma,
-            coef=[coef_m, -coef_m],
-            rate=[a1, a2],
-            algo=self.algo,
-        )
+            coef_m = d * k3
+            c_m = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[coef_m, -coef_m],
+                rate=[beta1, beta2],
+                algo=self.algo,
+            )
+        else:
+            # Ce is the full K1=(alpha1+alpha2) exponential; Cm is what's
+            # left once Ce is subtracted from the total prediction
+            c_e = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[alpha1 + alpha2],
+                rate=[beta1],
+                algo=self.algo,
+            )
+            c_m = util.exp_conv(
+                self.aif.time,
+                self.aif.plasma,
+                coef=[alpha2, -alpha2],
+                rate=[0.0, beta1],
+                algo=self.algo,
+            )
 
         # Interpolate all the parts
         c_p_i = util.resample(self.aif.time, c_p, self.pet.time)
@@ -211,12 +556,13 @@ class FdgFour(PetModel):
 
     def unit_conv(self, params, glu=None, lc=0.65):
         """
-        Generates predictions for 2 compartment model with k4
+        Converts model parameters to physiological measurements
 
         Parameters
         ----------
         params: array
-            A 5 x 1 array containing K1, vd, k3, k4, and vb
+            [alpha1, alpha2, beta1, beta2, vb] (k4 True) or
+            [alpha1, alpha2, beta1, vb] (k4 False)
         glu: float
             Plasma glucose level in mg/dL
         lc: float
@@ -228,186 +574,24 @@ class FdgFour(PetModel):
             A vector of metabolic parameters
         """
 
-        # Convert rato constants and volumes
-        K1 = params[0] * 60.0 / 1.05 * 100.0
-        k3 = params[2] * 60.0
-        k4 = params[3] * 60.0
-        vb = params[4] * 100.0
-        k2 = K1 / (params[1] / 1.05 * 100) - k3
+        alpha1, alpha2, beta1, beta2, vb = self._split(params)
+        K1, k2, k3, k4 = fdg_ab_to_rates(alpha1, alpha2, beta1, beta2)
+
+        # Convert rate constants and volumes to standard units
+        K1 = K1 * 60.0 / 1.05 * 100.0
+        k2 = k2 * 60.0
+        k3 = k3 * 60.0
+        k4 = k4 * 60.0
+        vb = vb * 100.0
         ki = (K1 * k3) / (k2 + k3)
-        vt = (K1 / k2) * (1 + (k3 / k4))
 
         # Make parameter list for output
-        meas = np.array([K1, k2, k3, k4, ki, vt, vb])
-
-        # Parameters that require plasma glucose level
-        if glu is not None:
-            # Convert plasma glucose level to uMol/ml
-            glu_conv = glu / 18.0156
-
-            # See if we need to compute lc
-            if lc < 0:
-                lc = 0.39 + (1.48 - 0.39) * (ki / K1)
-
-            # Compute additional parameters
-            cmr = ki * glu_conv / lc
-            influx = K1 * glu_conv
-            conc = K1 / k2 * glu_conv
-
-            # Add terms
-            meas = np.append(meas, [cmr, influx, conc])
-
-        return meas
-
-
-class FdgThree(PetModel):
-    """
-    Defines 3 parameter, 2 compartment fdg model with blood volume
-    """
-
-    def __init__(self, aif, pet, plasma=True, algo="trapz"):
-        """
-        Initialize model object for two compartment model
-
-        Parameters
-        ----------
-        aif: Tac object
-            Tac object containing the aif data
-        pet: Tac object
-            Tac object containing the pet data
-        plasma: boolean
-            True converts input function to plasma
-        algo: str
-            Integration rule for util.exp_conv: "trapz" or "simpson"
-        """
-
-        # Add input to model objection
-        PetModel.__init__(self, aif, pet, name="FDG without k4", algo=algo)
-        self.plasma = plasma
-
-        # Get plasma version of input function if necessary
-        if self.plasma is True:
-            self.aif.plasma = (1.071966 - 1.07294e-5 * self.aif.time) * self.aif.cnt
+        if self.k4 is True:
+            vt = (K1 / k2) * (1 + (k3 / k4))
+            meas = np.array([K1, k2, k3, k4, ki, vt, vb])
         else:
-            self.aif.plasma = self.aif.cnt
-
-    def pred(self, params):
-        """
-        Generates predictions for 2 compartment model without k4
-
-        Parameters
-        ----------
-        params: array
-            A 4 x 1 array containing K1, vd, k3, and vb
-
-        Returns
-        -------
-        pred: array
-            A vector of model predictions at pet times
-        """
-
-        # Rename params
-        K1 = params[0]
-        k3 = params[2]
-        vb = params[3]
-        k2 = K1 / params[1] - k3
-
-        # Analytically convolve the plasma input function with the
-        # exponential kernel K1*exp(-a*t) + C*(1-exp(-a*t)), a=k2+k3,
-        # C=K1*k3/a
-        a = k2 + k3
-        c_const = K1 * k3 / a
-        hat = util.exp_conv(
-            self.aif.time,
-            self.aif.plasma,
-            coef=[c_const, K1 - c_const],
-            rate=[0.0, a],
-            algo=self.algo,
-        )
-        hat = (1.0 - vb) * hat
-
-        # Add in blood volume
-        hat += self.aif.cnt * vb
-
-        # Interpolate the model prediction at tac sampling time
-        return util.resample(self.aif.time, hat, self.pet.time)
-
-    def comp(self, params):
-        """
-        Generates predictions for individual model components
-
-        Parameters
-        ----------
-        params: array
-             A 4 x 1 array containing K1, vd, k3, and vb
-
-        Returns
-        -------
-        comps: list
-           A list containing model component vectors
-        """
-
-        # Rename params
-        K1 = params[0]
-        k3 = params[2]
-        vb = params[3]
-        k2 = K1 / params[1] - k3
-        a = k2 + k3
-        c_const = K1 * k3 / a
-
-        # Compute blood volume piece
-        c_p = self.aif.cnt * vb
-
-        # Analytically convolve the plasma input function with the kernel
-        # for each compartment
-        c_e = util.exp_conv(
-            self.aif.time, self.aif.plasma, coef=[K1], rate=[a], algo=self.algo
-        )
-        c_m = util.exp_conv(
-            self.aif.time,
-            self.aif.plasma,
-            coef=[c_const, -c_const],
-            rate=[0.0, a],
-            algo=self.algo,
-        )
-
-        # Interpolate all the parts
-        c_p_i = util.resample(self.aif.time, c_p, self.pet.time)
-        c_e_i = util.resample(self.aif.time, c_e, self.pet.time)
-        c_m_i = util.resample(self.aif.time, c_m, self.pet.time)
-
-        # Return list with components
-        return np.stack((c_p_i, c_e_i * (1.0 - vb), c_m_i * (1.0 - vb)), axis=1)
-
-    def unit_conv(self, params, glu=None, lc=0.65):
-        """
-        Generates predictions for 2 compartment model without k4
-
-        Parameters
-        ----------
-        params: array
-            A 4 x 1 array containing K1, vd, k3, and vb
-        glu: float
-            Plasma glucose level in mg/dL
-        lc: float
-            Lumped constant for FDG
-
-        Returns
-        -------
-        meas: array
-            A vector of metabolic parameters
-        """
-
-        # Convert rato constants and volumes
-        K1 = params[0] * 60.0 / 1.05 * 100.0
-        k3 = params[2] * 60.0
-        vb = params[3] * 100.0
-        k2 = K1 / (params[1] / 1.05 * 100) - k3
-        ki = (K1 * k3) / (k2 + k3)
-        vt = K1 / k2
-
-        # Make parameter list for output
-        meas = np.array([K1, k2, k3, ki, vt, vb])
+            vt = K1 / k2
+            meas = np.array([K1, k2, k3, ki, vt, vb])
 
         # Parameters that require plasma glucose level
         if glu is not None:

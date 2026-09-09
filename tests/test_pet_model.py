@@ -4,8 +4,7 @@ import scipy.interpolate as interp
 
 from ppg import util
 from ppg.pet_model import (
-    FdgFour,
-    FdgThree,
+    Fdg,
     FlowTwo,
     OhtaTwo,
     OneComp,
@@ -136,8 +135,8 @@ def test_two_comp_with_blood_volume_runs(synth_aif, synth_pet):
     assert coefs.shape == (5,)
 
 
-def test_fdg_four_pred_and_components(synth_aif, synth_pet):
-    model = FdgFour(synth_aif, synth_pet, plasma=False)
+def test_fdg_with_k4_pred_and_components(synth_aif, synth_pet):
+    model = Fdg(synth_aif, synth_pet, k4=True)
     params = np.array([0.02, 0.5, 0.05, 0.01, 0.03])
     hat = model.pred(params)
     assert hat.shape == synth_pet.time.shape
@@ -147,8 +146,9 @@ def test_fdg_four_pred_and_components(synth_aif, synth_pet):
     assert comps.shape == (synth_pet.time.shape[0], 3)
 
 
-def test_fdg_four_unit_conv_shapes():
-    model = FdgFour.__new__(FdgFour)
+def test_fdg_with_k4_unit_conv_shapes():
+    model = Fdg.__new__(Fdg)
+    model.k4 = True
     params = np.array([0.02, 0.5, 0.05, 0.01, 0.03])
     meas = model.unit_conv(params)
     assert meas.shape == (7,)
@@ -157,8 +157,8 @@ def test_fdg_four_unit_conv_shapes():
     assert meas_glu.shape == (10,)
 
 
-def test_fdg_three_pred_and_components(synth_aif, synth_pet):
-    model = FdgThree(synth_aif, synth_pet, plasma=False)
+def test_fdg_without_k4_pred_and_components(synth_aif, synth_pet):
+    model = Fdg(synth_aif, synth_pet, k4=False)
     params = np.array([0.02, 0.5, 0.05, 0.03])
     hat = model.pred(params)
     assert hat.shape == synth_pet.time.shape
@@ -166,6 +166,31 @@ def test_fdg_three_pred_and_components(synth_aif, synth_pet):
 
     comps = model.comp(params)
     assert comps.shape == (synth_pet.time.shape[0], 3)
+
+
+def test_fdg_hct_conversion(synth_aif, synth_pet):
+    # Fdg writes aif.plasma onto the Tac object it's given, so each
+    # variant below needs its own copy -- sharing synth_aif across them
+    # would let a later construction silently overwrite an earlier one's
+    # result
+    def clone_aif():
+        return Tac(synth_aif.time, synth_aif.cnt.copy(), dc=synth_aif.dc, h_life=synth_aif.h_life)
+
+    # No hct (default) and hct=0 (no RBC contribution) should both leave
+    # the tissue-uptake input equal to the raw whole-blood curve
+    no_hct = Fdg(clone_aif(), synth_pet, k4=False)
+    assert np.array_equal(no_hct.aif.plasma, synth_aif.cnt)
+
+    zero_hct = Fdg(clone_aif(), synth_pet, k4=False, hct=0.0)
+    assert np.allclose(zero_hct.aif.plasma, synth_aif.cnt)
+
+    # A physiological hct should give a distinct, finite plasma curve,
+    # while leaving aif.cnt itself (used for the blood-volume term) as
+    # whole blood
+    converted = Fdg(clone_aif(), synth_pet, k4=False, hct=0.45)
+    assert np.all(np.isfinite(converted.aif.plasma))
+    assert not np.array_equal(converted.aif.plasma, synth_aif.cnt)
+    assert np.array_equal(converted.aif.cnt, synth_aif.cnt)
 
 
 def test_oxy_one_pred_and_unit_conv(synth_aif):

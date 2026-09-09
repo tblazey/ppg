@@ -8,21 +8,54 @@ from ppg.scripts import cmr_opt
 
 from .conftest import replicate_with_noise, save_csv, save_nifti, save_pet_json
 
-# plasma=False (i.e. the -wb flag) so the aif isn't run through the
-# whole-blood-to-plasma conversion, keeping the forward simulation simple
+# hct is left at its None default (no whole-blood-to-plasma conversion),
+# keeping the forward simulation simple
 TRUE_THREE = np.array([0.0017, 0.79, 0.001, 0.04])  # K1, vd, k3, vb
 TRUE_FOUR = np.array([0.0017, 0.79, 0.001, 0.00011, 0.04])  # K1, vd, k3, k4, vb
 _F18_HALF_LIFE = ppg.io.RADIONUCLIDE_HALF_LIFE["18F"]
 
 
-def _build_dataset(tmp_path, spatial_shape, true_params, model_cls, seed):
+def _fdg_rates_to_ab(K1, vd, k3, k4=None):
+    """
+    Test-only inverse of ppg.pet_model.fdg_ab_to_rates: converts physically
+    meaningful ground-truth rate constants into the alpha/beta params that
+    Fdg.pred now expects, so tests can still express "truth" in readable
+    physical units.
+    """
+
+    k2 = K1 / vd - k3
+
+    if k4 is None:
+        beta1 = k2 + k3
+        alpha1 = K1 * k2 / beta1
+        alpha2 = K1 * k3 / beta1
+        return np.array([alpha1, alpha2, beta1])
+
+    k_sum = k2 + k3 + k4
+    k_sqrt = np.sqrt(k_sum**2 - 4.0 * k2 * k4)
+    beta1 = (k_sum - k_sqrt) / 2.0
+    beta2 = (k_sum + k_sqrt) / 2.0
+    d = K1 / (beta2 - beta1)
+    alpha1 = d * (k3 + k4 - beta1)
+    alpha2 = d * (beta2 - k3 - k4)
+    return np.array([alpha1, alpha2, beta1, beta2])
+
+
+def _build_dataset(tmp_path, spatial_shape, true_params, k4, seed, hct=None):
     t = np.arange(0, 200, 4.0)
     aif_cnt = 100.0 * t * np.exp(-t / 40.0) + 5.0
 
     aif = ppg.Tac(t, aif_cnt, dc=True, h_life=_F18_HALF_LIFE)
     dummy_pet = ppg.Tac(t, np.zeros_like(t), dc=True, h_life=_F18_HALF_LIFE)
-    model = model_cls(aif, dummy_pet, plasma=False)
-    pet_cnt = model.pred(true_params)
+    model = ppg.pet_model.Fdg(aif, dummy_pet, k4=k4, hct=hct)
+
+    if k4 is False:
+        K1, vd, k3, vb = true_params
+        ab_params = np.append(_fdg_rates_to_ab(K1, vd, k3), vb)
+    else:
+        K1, vd, k3, k4_rate, vb = true_params
+        ab_params = np.append(_fdg_rates_to_ab(K1, vd, k3, k4_rate), vb)
+    pet_cnt = model.pred(ab_params)
 
     aif_path = save_csv(tmp_path / "aif.csv", t, aif_cnt)
     json_path = save_pet_json(
@@ -37,14 +70,14 @@ def _build_dataset(tmp_path, spatial_shape, true_params, model_cls, seed):
 
 def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
     aif_path, pet_path, json_path = _build_dataset(
-        tmp_path, (1, 1, 1), TRUE_THREE, ppg.pet_model.FdgThree, seed=2
+        tmp_path, (1, 1, 1), TRUE_THREE, k4=False, seed=2
     )
     out_prefix = str(tmp_path / "out")
 
     monkeypatch.setattr(
         sys,
         "argv",
-        ["cmr-opt", aif_path, pet_path, json_path, out_prefix, "-avg", "-wb"],
+        ["cmr-opt", aif_path, pet_path, json_path, out_prefix, "-avg"],
     )
     with pytest.raises(SystemExit):
         cmr_opt.main()
@@ -67,7 +100,7 @@ def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
 
 def test_cmr_opt_four_compartment_with_ca_and_voxels(tmp_path, monkeypatch):
     aif_path, pet_path, json_path = _build_dataset(
-        tmp_path, (2, 2, 1), TRUE_FOUR, ppg.pet_model.FdgFour, seed=3
+        tmp_path, (2, 2, 1), TRUE_FOUR, k4=True, seed=3
     )
     out_prefix = str(tmp_path / "out")
 
@@ -80,7 +113,6 @@ def test_cmr_opt_four_compartment_with_ca_and_voxels(tmp_path, monkeypatch):
             pet_path,
             json_path,
             out_prefix,
-            "-wb",
             "-k4",
             "-ca",
             "90",
@@ -115,3 +147,59 @@ def test_cmr_opt_four_compartment_with_ca_and_voxels(tmp_path, monkeypatch):
 
     for name in par_names[:-1]:  # bic isn't a voxelwise output
         assert (tmp_path / f"out_{name}.nii.gz").exists()
+
+
+def test_cmr_opt_save_se(tmp_path, monkeypatch):
+    aif_path, pet_path, json_path = _build_dataset(
+        tmp_path, (2, 2, 1), TRUE_THREE, k4=False, seed=7
+    )
+    out_prefix = str(tmp_path / "out")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cmr-opt", aif_path, pet_path, json_path, out_prefix, "-save_se"],
+    )
+    cmr_opt.main()
+
+    se_names = ["K1", "k2", "k3", "ki", "vt", "vb"]
+
+    se_path = tmp_path / "out_wb_se.csv"
+    assert se_path.exists()
+    se_lines = se_path.read_text().strip().split("\n")
+    wb_se = {row.split(",")[0]: float(row.split(",")[1]) for row in se_lines}
+    assert set(wb_se) == set(se_names)
+    assert all(np.isfinite(v) and v >= 0 for v in wb_se.values())
+
+    for name in se_names:
+        assert (tmp_path / f"out_{name}_se.nii.gz").exists()
+
+
+def test_cmr_opt_hct_correction_recovers_k1(tmp_path, monkeypatch):
+    aif_path, pet_path, json_path = _build_dataset(
+        tmp_path, (1, 1, 1), TRUE_THREE, k4=False, seed=6, hct=0.45
+    )
+    K1, vd, k3, vb = TRUE_THREE
+    expected_K1 = K1 * 60.0 / 1.05 * 100.0
+
+    def fit_k1(out_name, extra_args):
+        out_prefix = tmp_path / out_name
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["cmr-opt", aif_path, pet_path, json_path, str(out_prefix), "-avg", *extra_args],
+        )
+        with pytest.raises(SystemExit):
+            cmr_opt.main()
+        lines = (tmp_path / f"{out_name}_wb_vals.csv").read_text().strip().split("\n")
+        values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
+        return values["K1"]
+
+    k1_with_hct = fit_k1("with_hct", ["-hct", "0.45"])
+    k1_without_hct = fit_k1("without_hct", [])
+
+    # Fitting with the correct hct should recover K1 closely, and be
+    # noticeably closer to truth than ignoring the whole-blood-to-plasma
+    # correction the data was actually generated with
+    assert k1_with_hct == pytest.approx(expected_K1, rel=0.05)
+    assert abs(k1_with_hct - expected_K1) < abs(k1_without_hct - expected_K1)

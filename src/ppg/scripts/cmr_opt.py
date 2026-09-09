@@ -75,17 +75,20 @@ def main():
         help="Save predictions for individual compartments",
     )
     parser.add_argument(
+        "-hct",
+        type=float,
+        nargs=1,
+        default=[None],
+        help="Subject hematocrit (0-1). If given, converts the aif from"
+        + " whole blood to plasma via a time-varying RBC-to-plasma ratio"
+        + " (Phelps et al., 1979). If omitted, no conversion is applied.",
+    )
+    parser.add_argument(
         "-hist",
         action="store_const",
         const=[1],
         default=[0],
         help="Output parameter histograms",
-    )
-    parser.add_argument(
-        "-init",
-        type=float,
-        nargs="*",
-        help="Initial values for K1, K1/(k2+k3), k3, [k4], and Vb.",
     )
     parser.add_argument(
         "-k4",
@@ -111,6 +114,13 @@ def main():
         help="3D binary mask image",
     )
     parser.add_argument(
+        "-save_se",
+        action="store_const",
+        const=[True],
+        default=[False],
+        help="Save standard error estimates for parameters",
+    )
+    parser.add_argument(
         "-scale",
         type=float,
         nargs=1,
@@ -127,23 +137,14 @@ def main():
         help="Volume for each voxel in input images."
         + " Used for weighting whole-brain average",
     )
-    parser.add_argument(
-        "-wb",
-        action="store_const",
-        const=[False],
-        default=[True],
-        help="Use whole-blood input function for modeling",
-    )
     args = parser.parse_args()
 
     # Define parameters that will always be estimated
     par_names = ["K1", "k2", "k3", "ki", "vt", "vb", "nrmse", "bic"]
     par_units = ["mL/hg/min", "1/min", "1/min", "mL/hg/min", "mL/hg", "%", "NA", "NA"]
-    n_par = 4
 
     # Add in k4 if necessary
     if args.k4[0] is True:
-        n_par += 1
         par_names.insert(3, "k4")
         par_units.insert(3, "1/min")
 
@@ -162,6 +163,9 @@ def main():
             else:
                 args.lc = [0.65]
 
+    # Extra keyword arguments unit_conv (and se, which wraps it) need
+    unit_conv_kwargs = {} if args.ca is None else {"glu": args.ca[0], "lc": args.lc[0]}
+
     # Load up all the data
     aif, pet_hdr, pet_mskd, msk_data, msk_hdr, mean_pet, h_life = ppg.util.prep_model(
         args.aif[0],
@@ -174,34 +178,29 @@ def main():
         args.censor[0],
     )
 
-    # Create initial values
-    if args.init is not None:
-        if n_par != len(args.init):
-            raise ValueError(
-                "Number of initial values does not equal number of parameters"
-            )
-        mean_init = np.array(args.init)
+    # Default init, in the alpha/beta parameterization fit by Fdg --
+    # roughly K1=0.0017, vd=0.79, k3=0.001, vb=0.04 (plus k4=0.00011 for
+    # the k4 model) in physical units
+    if args.k4[0] is False:
+        mean_init = np.array([0.00091, 0.00079, 0.00215, 0.04])
     else:
-        mean_init = np.array([0.0017, 0.79, 0.001, 0.04])
-        if args.k4[0] is True:
-            mean_init = np.insert(mean_init, 3, 0.00011)
+        mean_init = np.array([0.000833, 0.000867, 5.75e-05, 0.0022, 0.04])
 
     # Setup model
-    if args.k4[0] is False:
-        mean_model = ppg.pet_model.FdgThree(
-            aif, mean_pet, plasma=args.wb[0], algo="simpson"
-        )
-    else:
-        mean_model = ppg.pet_model.FdgFour(
-            aif, mean_pet, plasma=args.wb[0], algo="simpson"
-        )
+    mean_model = ppg.pet_model.Fdg(
+        aif, mean_pet, k4=args.k4[0], hct=args.hct[0], algo="simpson"
+    )
 
     # Setup inits
     mean_bounds = np.stack((mean_init / 5.0, mean_init * 5.0), axis=1)
 
     # Optimize the mean pet tac
     mean_opt = opt.minimize(
-        mean_model.cost, mean_init, method="L-BFGS-B", bounds=mean_bounds
+        lambda x: mean_model.cost(x, deriv=True),
+        mean_init,
+        method="L-BFGS-B",
+        jac=True,
+        bounds=mean_bounds,
     )
 
     # Convergence check
@@ -212,9 +211,13 @@ def main():
     if args.basin[0] is True:
         mean_b_bounds = np.stack((mean_opt.x / 2.0, mean_opt.x * 2.0), axis=1)
         mean_opt = opt.basinhopping(
-            mean_model.cost,
+            lambda x: mean_model.cost(x, deriv=True),
             mean_opt.x,
-            minimizer_kwargs={"bounds": mean_b_bounds, "options": {"ftol": 1e-5}},
+            minimizer_kwargs={
+                "jac": True,
+                "bounds": mean_b_bounds,
+                "options": {"ftol": 1e-5},
+            },
         )
 
     # Compute nrmse and bic for whole-brain fit
@@ -224,12 +227,17 @@ def main():
     ] * np.log(mean_pet.n)
 
     # Write out mean pet tac parameter estimates
-    if args.ca is None:
-        mean_pars = mean_model.unit_conv(mean_opt.x)
-    else:
-        mean_pars = mean_model.unit_conv(mean_opt.x, args.ca[0], args.lc[0])
+    mean_pars = mean_model.unit_conv(mean_opt.x, **unit_conv_kwargs)
     mean_pars = np.append(np.append(mean_pars, mean_nrmse), mean_bic)
     ppg.io.write_pars(mean_pars, par_names, par_units, f"{args.out[0]}_wb_vals.csv")
+
+    # Write out whole-brain standard errors if necessary (nrmse/bic aren't
+    # part of unit_conv's output, so they're excluded here)
+    if args.save_se[0] is True:
+        mean_se = mean_model.se(mean_opt.x, unit_conv_kwargs=unit_conv_kwargs)
+        ppg.io.write_pars(
+            mean_se, par_names[:-2], par_units[:-2], f"{args.out[0]}_wb_se.csv"
+        )
 
     # Make a plot showing fitted pet
     mean_hat = mean_model.pred(mean_opt.x)
@@ -281,6 +289,9 @@ def main():
     vox_params = np.zeros((n_vox, len(par_names)))
     if args.comps[0] is True:
         vox_comps = np.zeros((n_vox, mean_pet.n, 3))
+    if args.save_se[0] is True:
+        # nrmse (par_names' last entry) isn't part of unit_conv's output
+        vox_se = np.full((n_vox, len(par_names) - 1), np.nan)
 
     # Use the whole-brain estimate to initilize/bound the voxel optimizations
     vox_init = mean_opt.x
@@ -293,20 +304,28 @@ def main():
         vox_pet = ppg.Tac(mean_pet.time, pet_mskd[i, :], dc=True, h_life=h_life)
 
         # Make model object for current voxel
-        if args.k4[0] is False:
-            vox_model = ppg.pet_model.FdgThree(
-                aif, vox_pet, plasma=args.wb[0], algo=args.algo[0]
-            )
+        vox_model = ppg.pet_model.Fdg(
+            aif, vox_pet, k4=args.k4[0], hct=args.hct[0], algo=args.algo[0]
+        )
+
+        # Warm-start from this voxel's own LLS estimate when it's usable
+        # (both non-degenerate and inside the fixed bounds below -- LLS can
+        # return a value at/near 0 that would collapse a bounds/N..bounds*N
+        # window), otherwise fall back to the previous voxel's fit
+        lls_init = vox_model.init_par(vox_pet.cnt)
+        if lls_init is not None and np.all(lls_init >= vox_bounds[:, 0]) and np.all(
+            lls_init <= vox_bounds[:, 1]
+        ):
+            cur_init = lls_init
         else:
-            vox_model = ppg.pet_model.FdgFour(
-                aif, vox_pet, plasma=args.wb[0], algo=args.algo[0]
-            )
+            cur_init = vox_init
 
         # Optimize the voxel pet tac
         vox_opt = opt.minimize(
-            vox_model.cost,
-            vox_init,
+            lambda x: vox_model.cost(x, deriv=True),
+            cur_init,
             method="L-BFGS-B",
+            jac=True,
             bounds=vox_bounds,
             options={"ftol": 1e-5},
         )
@@ -315,19 +334,20 @@ def main():
         if args.basin[0] is True:
             vox_b_bounds = np.stack((vox_opt.x / 2.0, vox_opt.x * 2.0), axis=1)
             vox_opt = opt.basinhopping(
-                vox_model.cost,
+                lambda x: vox_model.cost(x, deriv=True),
                 vox_opt.x,
-                minimizer_kwargs={"bounds": vox_b_bounds, "options": {"ftol": 1e-5}},
+                minimizer_kwargs={
+                    "jac": True,
+                    "bounds": vox_b_bounds,
+                    "options": {"ftol": 1e-5},
+                },
             )
         elif vox_opt.success is False:
             no_c += 1
             continue
 
         # Store parameter estimates
-        if args.ca is None:
-            vox_params[i, 0:-1] = vox_model.unit_conv(vox_opt.x)
-        else:
-            vox_params[i, 0:-1] = vox_model.unit_conv(vox_opt.x, args.ca[0], args.lc[0])
+        vox_params[i, 0:-1] = vox_model.unit_conv(vox_opt.x, **unit_conv_kwargs)
 
         # Compute normalized rmse
         vox_params[i, -1] = np.sqrt(vox_opt.fun / np.sqrt(vox_pet.n)) / np.mean(
@@ -339,6 +359,10 @@ def main():
         if args.comps[0] is True:
             vox_comps[i, :] = vox_model.comp(vox_opt.x)
 
+        # Get voxel standard errors
+        if args.save_se[0] is True:
+            vox_se[i, :] = vox_model.se(vox_opt.x, unit_conv_kwargs=unit_conv_kwargs)
+
     # Write out number of voxels that did not converge
     ppg.io.write_str(f"{no_c}", f"{args.out[0]}_no_converge.txt")
 
@@ -347,6 +371,14 @@ def main():
     ppg.io.write_imgs(
         vox_params, pet_hdr.shape[0:3], pet_hdr.affine, img_names, msk=msk_data
     )
+
+    # Save voxelwise standard errors if necessary (nrmse isn't part of
+    # unit_conv's output, so it's excluded here)
+    if args.save_se[0] is True:
+        se_names = [f"{args.out[0]}_{name}_se" for name in par_names[:-1]]
+        ppg.io.write_imgs(
+            vox_se, pet_hdr.shape[0:3], pet_hdr.affine, se_names, msk=msk_data
+        )
 
     # Save voxelwise components if necessary
     if args.comps[0] is True:
