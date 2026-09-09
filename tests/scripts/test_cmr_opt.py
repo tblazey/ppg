@@ -1,5 +1,6 @@
 import sys
 
+import nibabel as nib
 import numpy as np
 import pytest
 
@@ -173,6 +174,67 @@ def test_cmr_opt_save_se(tmp_path, monkeypatch):
 
     for name in se_names:
         assert (tmp_path / f"out_{name}_se.nii.gz").exists()
+
+
+def test_cmr_opt_four_compartment_save_se(tmp_path, monkeypatch):
+    # k4=True + -save_se together exercises the "both terms are real
+    # exponentials" branch of exp_conv's hess=True kernels (k4=False's
+    # -save_se test only ever has one real term + one constant term) --
+    # this combination wasn't covered by any other test.
+    aif_path, pet_path, json_path = _build_dataset(
+        tmp_path, (2, 2, 1), TRUE_FOUR, k4=True, seed=8
+    )
+    out_prefix = str(tmp_path / "out")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cmr-opt", aif_path, pet_path, json_path, out_prefix, "-k4", "-save_se"],
+    )
+    cmr_opt.main()
+
+    se_names = ["K1", "k2", "k3", "k4", "ki", "vt", "vb"]
+
+    se_path = tmp_path / "out_wb_se.csv"
+    assert se_path.exists()
+    se_lines = se_path.read_text().strip().split("\n")
+    wb_se = {row.split(",")[0]: float(row.split(",")[1]) for row in se_lines}
+    assert set(wb_se) == set(se_names)
+    # k4 (reversible) fits can be genuinely weakly identified -- a NaN SE
+    # for a specific output is an expected outcome, not a bug -- but every
+    # value should be either finite-nonnegative or NaN, never negative
+    assert all(np.isnan(v) or v >= 0 for v in wb_se.values())
+
+    for name in se_names:
+        assert (tmp_path / f"out_{name}_se.nii.gz").exists()
+
+
+def test_cmr_opt_voxelwise_algo_simpson(tmp_path, monkeypatch):
+    # The per-voxel loop defaults to algo="trapz" -- explicitly requesting
+    # "simpson" there exercises exp_conv's simpson kernels with deriv=True
+    # through the real per-voxel L-BFGS-B loop (the whole-brain fit always
+    # uses simpson regardless, so it doesn't exercise this path).
+    aif_path, pet_path, json_path = _build_dataset(
+        tmp_path, (2, 2, 1), TRUE_THREE, k4=False, seed=9
+    )
+    out_prefix = str(tmp_path / "out")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cmr-opt", aif_path, pet_path, json_path, out_prefix, "-algo", "simpson"],
+    )
+    cmr_opt.main()
+
+    no_converge = int((tmp_path / "out_no_converge.txt").read_text())
+    assert no_converge == 0
+
+    K1, vd, k3, vb = TRUE_THREE
+    expected_K1 = K1 * 60.0 / 1.05 * 100.0
+
+    k1_img = nib.load(str(tmp_path / "out_K1.nii.gz")).get_fdata()
+    assert np.all(np.isfinite(k1_img[k1_img != 0]))
+    assert np.mean(k1_img[k1_img != 0]) == pytest.approx(expected_K1, rel=0.1)
 
 
 def test_cmr_opt_hct_correction_recovers_k1(tmp_path, monkeypatch):
