@@ -24,6 +24,36 @@ def test_load_pet_json_computes_mid_frame_times_and_half_life(tmp_path):
     assert h_life == pytest.approx(io.RADIONUCLIDE_HALF_LIFE["18F"])
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("18F", "18F"),
+        ("F18", "18F"),
+        ("F-18", "18F"),
+        ("18 F", "18F"),
+        ("f18", "18F"),
+        ("11C", "11C"),
+        ("C-11", "11C"),
+    ],
+)
+def test_normalize_radionuclide(raw, expected):
+    assert io.normalize_radionuclide(raw) == expected
+
+
+def test_load_pet_json_accepts_element_first_radionuclide(tmp_path):
+    path = tmp_path / "pet.json"
+    meta = {
+        "FrameTimesStart": [0.0],
+        "FrameDuration": [10.0],
+        "TracerRadionuclide": "F18",
+    }
+    path.write_text(json.dumps(meta))
+
+    _, h_life = io.load_pet_json(str(path))
+
+    assert h_life == pytest.approx(io.RADIONUCLIDE_HALF_LIFE["18F"])
+
+
 def test_load_pet_json_unknown_radionuclide_raises(tmp_path):
     path = tmp_path / "pet.json"
     meta = {

@@ -10,6 +10,7 @@ matplotlib.use("Agg")
 
 # Load needed libraries
 import json
+import re
 
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -27,6 +28,38 @@ RADIONUCLIDE_HALF_LIFE = {
     "68Ga": 4062.6,
     "82Rb": 75.0,
 }
+
+
+def normalize_radionuclide(radionuclide):
+    """
+    Normalizes a radionuclide label to the canonical "<mass><element>" form
+    (e.g. "18F") used as keys in RADIONUCLIDE_HALF_LIFE, accepting either
+    mass-first or element-first orderings and an optional hyphen/space
+    (e.g. "F18", "F-18", "18F", "18 F" all normalize to "18F").
+
+    Parameters
+    ----------
+    radionuclide: string
+        Radionuclide label to normalize.
+
+    Returns
+    -------
+    string
+        Normalized radionuclide label. Returned unchanged if it does not
+        match the expected mass/element pattern.
+    """
+
+    cleaned = re.sub(r"[\s-]", "", radionuclide)
+    match = re.fullmatch(r"(\d+)([A-Za-z]+)|([A-Za-z]+)(\d+)", cleaned)
+    if not match:
+        return cleaned
+
+    mass, element = (
+        (match.group(1), match.group(2))
+        if match.group(1)
+        else (match.group(4), match.group(3))
+    )
+    return f"{mass}{element.capitalize()}"
 
 
 def load_pet_json(path):
@@ -54,7 +87,7 @@ def load_pet_json(path):
     durations = np.array(meta["FrameDuration"], dtype=float)
     frame_times = starts + durations / 2.0
 
-    radionuclide = meta["TracerRadionuclide"].replace(" ", "")
+    radionuclide = normalize_radionuclide(meta["TracerRadionuclide"])
     if radionuclide not in RADIONUCLIDE_HALF_LIFE:
         raise ValueError(
             f"Unknown radionuclide {radionuclide}. Add it to io.RADIONUCLIDE_HALF_LIFE."
