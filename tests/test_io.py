@@ -103,15 +103,14 @@ def test_write_str(tmp_path):
 
 
 def test_write_args_handles_lists_and_empty_lists(tmp_path):
-    path = tmp_path / "args.txt"
+    path = tmp_path / "args.json"
     ns = argparse.Namespace(a=[], b=[1, 2, 3], c="x")
 
     io.write_args(ns, str(path))
-    contents = path.read_text()
+    with open(path, encoding="utf-8") as f:
+        contents = json.load(f)
 
-    assert "a: \n" in contents
-    assert "b: 1,2,3\n" in contents
-    assert "c: x\n" in contents
+    assert contents == {"a": [], "b": [1, 2, 3], "c": "x"}
 
 
 def test_write_pars(tmp_path):

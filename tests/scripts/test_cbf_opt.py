@@ -45,7 +45,7 @@ def test_cbf_opt_whole_brain_average(tmp_path, monkeypatch):
     assert vals_path.exists()
     assert (tmp_path / "out_wb_fit.tiff").exists()
     assert (tmp_path / "out_wb_contour.tiff").exists()
-    assert (tmp_path / "out_args.txt").exists()
+    assert (tmp_path / "out_args.json").exists()
 
     lines = vals_path.read_text().strip().split("\n")
     values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
@@ -76,7 +76,7 @@ def test_cbf_opt_voxelwise(tmp_path, monkeypatch):
         assert img_path.exists()
         assert hist_path.exists()
 
-    assert (tmp_path / "out_args.txt").exists()
+    assert (tmp_path / "out_args.json").exists()
 
 
 def test_cbf_opt_whole_brain_always_uses_simpson_regardless_of_algo_flag(

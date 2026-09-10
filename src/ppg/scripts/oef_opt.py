@@ -201,7 +201,7 @@ def main():
     # Quit if we don't want to do voxels
     if args.avg[0] == 1:
         # Save arguments and exit
-        ppg.io.write_args(args, f"{args.out[0]}_args.txt")
+        ppg.io.write_args(args, f"{args.out[0]}_args.json")
         sys.exit()
 
     # Make empty array for storing voxelwise parameters
@@ -263,7 +263,7 @@ def main():
         )
 
     # Save arguments and go home
-    ppg.io.write_args(args, f"{args.out[0]}_args.txt")
+    ppg.io.write_args(args, f"{args.out[0]}_args.json")
 
 
 if __name__ == "__main__":

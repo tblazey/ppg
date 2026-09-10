@@ -38,10 +38,11 @@ def main():
         nargs=1,
         default=["trapz"],
         choices=["trapz", "simpson"],
-        help="Integration rule for the voxelwise fits. 'trapz' (default) is"
-        + " faster; 'simpson' is more accurate, especially for sparsely"
-        + " sampled AIFs, but ~3-4x slower per voxel. The whole-brain fit"
-        + " always uses simpson regardless of this flag.",
+        help="Integration rule for the whole-brain and voxelwise fits."
+        + " 'trapz' (default) is faster and more numerically stable;"
+        + " 'simpson' is more accurate for a smoothly, densely sampled aif,"
+        + " but ~3-4x slower per voxel and can become ill-conditioned for"
+        + " an irregularly sampled aif combined with a fast fit rate.",
     )
     parser.add_argument(
         "-avg",
@@ -207,13 +208,21 @@ def main():
     same_grid = ppg.util.is_same_grid(aif.time, mean_pet.time)
     uniform_grid = ppg.util.is_uniform_grid(aif.time)
 
-    # Setup model
+    # Setup model -- same algo as the per-voxel loop (-algo, default
+    # "trapz"). "simpson" was previously hardcoded here on the assumption
+    # that it's strictly more accurate for a single whole-brain fit, but
+    # its non-uniform-grid cumulative integral can become ill-conditioned
+    # (alternating over/undershoot at consecutive time points) when a fit
+    # rate is fast enough for exp(rate*t) to span many orders of magnitude
+    # over the aif's time range and the aif grid has an irregular gap --
+    # verified against a fine-grid reference convolution, "trapz" stayed
+    # accurate in that regime while "simpson" didn't
     mean_model = ppg.pet_model.Fdg(
         aif,
         mean_pet,
         k4=args.k4[0],
         hct=args.hct[0],
-        algo="simpson",
+        algo=args.algo[0],
         same_grid=same_grid,
         uniform_grid=uniform_grid,
     )
@@ -308,7 +317,7 @@ def main():
     # Quit if we don't want to do voxels
     if args.avg[0] == 1:
         # Save arguments and exit
-        ppg.io.write_args(args, f"{args.out[0]}_args.txt")
+        ppg.io.write_args(args, f"{args.out[0]}_args.json")
         sys.exit()
 
     # Remove bic from parameter list
@@ -436,7 +445,7 @@ def main():
             )
 
     # Save arguments and go home
-    ppg.io.write_args(args, f"{args.out[0]}_args.txt")
+    ppg.io.write_args(args, f"{args.out[0]}_args.json")
 
 
 if __name__ == "__main__":

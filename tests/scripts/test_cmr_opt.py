@@ -87,7 +87,7 @@ def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
     params_path = tmp_path / "out_wb_params.json"
     assert params_path.exists()
     assert (tmp_path / "out_wb_plot.jpeg").exists()
-    assert (tmp_path / "out_args.txt").exists()
+    assert (tmp_path / "out_args.json").exists()
 
     with open(params_path, encoding="utf-8") as f:
         wb_params = json.load(f)
@@ -213,10 +213,9 @@ def test_cmr_opt_four_compartment_save_se(tmp_path, monkeypatch):
 
 
 def test_cmr_opt_voxelwise_algo_simpson(tmp_path, monkeypatch):
-    # The per-voxel loop defaults to algo="trapz" -- explicitly requesting
-    # "simpson" there exercises exp_conv's simpson kernels with deriv=True
-    # through the real per-voxel L-BFGS-B loop (the whole-brain fit always
-    # uses simpson regardless, so it doesn't exercise this path).
+    # Both the whole-brain and per-voxel fits default to algo="trapz" --
+    # explicitly requesting "simpson" exercises exp_conv's simpson kernels
+    # with deriv=True through the real per-voxel L-BFGS-B loop.
     aif_path, pet_path, json_path = _build_dataset(
         tmp_path, (2, 2, 1), TRUE_THREE, k4=False, seed=9
     )

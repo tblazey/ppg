@@ -74,7 +74,7 @@ def test_oef_opt_whole_brain_average(tmp_path, monkeypatch):
     assert vals_path.exists()
     assert (tmp_path / "out_wb_fit.tiff").exists()
     assert (tmp_path / "out_wb_opt_error.tiff").exists()
-    assert (tmp_path / "out_args.txt").exists()
+    assert (tmp_path / "out_args.json").exists()
 
     lines = vals_path.read_text().strip().split("\n")
     values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}

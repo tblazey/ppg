@@ -45,7 +45,7 @@ def test_ohta_opt_whole_brain_average(tmp_path, monkeypatch):
     vals_path = tmp_path / "out_wb_vals.csv"
     assert vals_path.exists()
     assert (tmp_path / "out_wb_fit.tiff").exists()
-    assert (tmp_path / "out_args.txt").exists()
+    assert (tmp_path / "out_args.json").exists()
 
     lines = vals_path.read_text().strip().split("\n")
     values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}

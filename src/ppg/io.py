@@ -197,7 +197,7 @@ def write_str(string, path):
 
 def write_args(args, path):
     """
-    Write out an argparse argument list to text
+    Write out an argparse argument list to JSON
 
     Parameters
     ----------
@@ -207,18 +207,10 @@ def write_args(args, path):
         Path to write file to with extension
     """
 
-    # Make string with all arguments
-    arg_string = ""
-    for arg, value in sorted(vars(args).items()):
-        if type(value) is list:
-            if len(value) > 0:
-                value = ",".join(map(str, value))
-            else:
-                value = ""
-        arg_string += f"{arg}: {value}\n"
+    arg_dict = dict(sorted(vars(args).items()))
 
-    # Write out arguments string
-    write_str(arg_string, path)
+    with open(path, "w", encoding="utf-8") as json_file:
+        json.dump(arg_dict, json_file, indent=2)
 
 
 def write_pars(pars, names, units, path):
