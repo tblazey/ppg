@@ -129,6 +129,25 @@ def test_write_pars_length_mismatch_raises(tmp_path):
         io.write_pars([1.0], ["K1", "k2"], ["mL/min", "1/min"], str(path))
 
 
+def test_write_pars_json(tmp_path):
+    path = tmp_path / "pars.json"
+    io.write_pars_json([1.0, 2.5], ["K1", "k2"], ["mL/min", "1/min"], str(path))
+
+    with open(path, encoding="utf-8") as f:
+        pars = json.load(f)
+
+    assert pars == {
+        "K1": {"value": 1.0, "unit": "mL/min"},
+        "k2": {"value": 2.5, "unit": "1/min"},
+    }
+
+
+def test_write_pars_json_length_mismatch_raises(tmp_path):
+    path = tmp_path / "pars.json"
+    with pytest.raises(ValueError):
+        io.write_pars_json([1.0], ["K1", "k2"], ["mL/min", "1/min"], str(path))
+
+
 def test_write_img_and_load_roundtrip(tmp_path):
     shape = (2, 2, 2)
     affine = np.eye(4)

@@ -250,6 +250,37 @@ def write_pars(pars, names, units, path):
     write_str(par_str, path)
 
 
+def write_pars_json(pars, names, units, path):
+    """
+    Writes out parameter vector as a JSON dict, keyed by name, each value a
+    {"value": ..., "unit": ...} pair -- e.g. cmr_opt's *_wb_params.json,
+    consumed by pet_qc's fit_qc report.
+
+    Parameters
+    ----------
+    pars: array
+        A array of length p containing parameter values
+    names: list
+        A list of length p with parameter names
+    units: list
+        A list of length p with parameter units
+    path: str
+        Name for output file (with extension)
+    """
+
+    # Make sure dimensions match
+    if not (len(pars) == len(names) == len(units)):
+        raise ValueError("Lengths of pars, names, and units must be the same")
+
+    par_dic = {
+        name: {"value": float(pars[i]), "unit": units[i]}
+        for i, name in enumerate(names)
+    }
+
+    with open(path, "w", encoding="utf-8") as json_file:
+        json.dump(par_dic, json_file, indent=4)
+
+
 def write_img(img_data, shape, affine, path, msk=None):
     """
     Write out array to Nifti image

@@ -1,3 +1,4 @@
+import json
 import sys
 
 import nibabel as nib
@@ -83,13 +84,14 @@ def test_cmr_opt_three_compartment_whole_brain(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         cmr_opt.main()
 
-    vals_path = tmp_path / "out_wb_vals.csv"
-    assert vals_path.exists()
-    assert (tmp_path / "out_wb_fit.tiff").exists()
+    params_path = tmp_path / "out_wb_params.json"
+    assert params_path.exists()
+    assert (tmp_path / "out_wb_plot.jpeg").exists()
     assert (tmp_path / "out_args.txt").exists()
 
-    lines = vals_path.read_text().strip().split("\n")
-    values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
+    with open(params_path, encoding="utf-8") as f:
+        wb_params = json.load(f)
+    values = {name: entry["value"] for name, entry in wb_params.items()}
 
     K1, vd, k3, vb = TRUE_THREE
     k2 = K1 / vd - k3
@@ -122,21 +124,22 @@ def test_cmr_opt_four_compartment_with_ca_and_voxels(tmp_path, monkeypatch):
     )
     cmr_opt.main()
 
-    vals_path = tmp_path / "out_wb_vals.csv"
-    lines = vals_path.read_text().strip().split("\n")
-    par_names = [row.split(",")[0] for row in lines]
+    params_path = tmp_path / "out_wb_params.json"
+    with open(params_path, encoding="utf-8") as f:
+        wb_params = json.load(f)
+    par_names = list(wb_params.keys())
 
-    # Regression: par_names[-2:1] insertion trick must still land cmrglc/
+    # Regression: par_names[-2:1] insertion trick must still land CMRglc/
     # influx/conc right before nrmse/bic, not silently drop them
     assert par_names == [
         "K1",
         "k2",
         "k3",
         "k4",
-        "ki",
-        "vt",
-        "vb",
-        "cmrglc",
+        "Ki",
+        "Vt",
+        "Vb",
+        "CMRglc",
         "influx",
         "conc",
         "nrmse",
@@ -163,7 +166,7 @@ def test_cmr_opt_save_se(tmp_path, monkeypatch):
     )
     cmr_opt.main()
 
-    se_names = ["K1", "k2", "k3", "ki", "vt", "vb"]
+    se_names = ["K1", "k2", "k3", "Ki", "Vt", "Vb"]
 
     se_path = tmp_path / "out_wb_se.csv"
     assert se_path.exists()
@@ -193,7 +196,7 @@ def test_cmr_opt_four_compartment_save_se(tmp_path, monkeypatch):
     )
     cmr_opt.main()
 
-    se_names = ["K1", "k2", "k3", "k4", "ki", "vt", "vb"]
+    se_names = ["K1", "k2", "k3", "k4", "Ki", "Vt", "Vb"]
 
     se_path = tmp_path / "out_wb_se.csv"
     assert se_path.exists()
@@ -272,9 +275,9 @@ def test_cmr_opt_censor_excludes_corrupted_frames(tmp_path, monkeypatch):
         )
         with pytest.raises(SystemExit):
             cmr_opt.main()
-        lines = (tmp_path / f"{out_name}_wb_vals.csv").read_text().strip().split("\n")
-        values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
-        return values["K1"]
+        with open(tmp_path / f"{out_name}_wb_params.json", encoding="utf-8") as f:
+            wb_params = json.load(f)
+        return wb_params["K1"]["value"]
 
     k1_censored = fit_k1(
         "censored", ["-censor", str(corrupted_frames[0]), str(corrupted_frames[1])]
@@ -320,9 +323,9 @@ def test_cmr_opt_censor_aif_removes_corrupted_aif_frames(tmp_path, monkeypatch):
         )
         with pytest.raises(SystemExit):
             cmr_opt.main()
-        lines = (tmp_path / f"{out_name}_wb_vals.csv").read_text().strip().split("\n")
-        values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
-        return values["K1"]
+        with open(tmp_path / f"{out_name}_wb_params.json", encoding="utf-8") as f:
+            wb_params = json.load(f)
+        return wb_params["K1"]["value"]
 
     censor_args = ["-censor", str(corrupted_frames[0]), str(corrupted_frames[1])]
     k1_pet_only = fit_k1("pet_only", censor_args)
@@ -348,9 +351,9 @@ def test_cmr_opt_hct_correction_recovers_k1(tmp_path, monkeypatch):
         )
         with pytest.raises(SystemExit):
             cmr_opt.main()
-        lines = (tmp_path / f"{out_name}_wb_vals.csv").read_text().strip().split("\n")
-        values = {row.split(",")[0]: float(row.split(",")[1]) for row in lines}
-        return values["K1"]
+        with open(tmp_path / f"{out_name}_wb_params.json", encoding="utf-8") as f:
+            wb_params = json.load(f)
+        return wb_params["K1"]["value"]
 
     k1_with_hct = fit_k1("with_hct", ["-hct", "0.45"])
     k1_without_hct = fit_k1("without_hct", [])

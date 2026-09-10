@@ -149,8 +149,11 @@ def main():
     )
     args = parser.parse_args()
 
-    # Define parameters that will always be estimated
-    par_names = ["K1", "k2", "k3", "ki", "vt", "vb", "nrmse", "bic"]
+    # Define parameters that will always be estimated -- names match the
+    # Ki/Vt/Vb/CMRglc casing convention pet_qc's fit_qc report expects
+    # (pet_qc._pick_map_param looks up "{root}_CMRglc.nii.gz"/"_Ki.nii.gz"
+    # by that exact casing)
+    par_names = ["K1", "k2", "k3", "Ki", "Vt", "Vb", "nrmse", "bic"]
     par_units = ["mL/hg/min", "1/min", "1/min", "mL/hg/min", "mL/hg", "%", "NA", "NA"]
 
     # Add in k4 if necessary
@@ -163,7 +166,7 @@ def main():
         # unit_conv appends [cmrglc, influx, conc] right before the
         # trailing nrmse/bic that this script appends below
         insert_idx = len(par_names) - 2
-        par_names[insert_idx:insert_idx] = ["cmrglc", "influx", "conc"]
+        par_names[insert_idx:insert_idx] = ["CMRglc", "influx", "conc"]
         par_units[insert_idx:insert_idx] = ["uMol/hg/min", "uMol/hg/min", "uMol/hg"]
 
         # Determine the correct value for the lc
@@ -250,10 +253,13 @@ def main():
         0
     ] * np.log(mean_pet.n)
 
-    # Write out mean pet tac parameter estimates
+    # Write out mean pet tac parameter estimates -- JSON, matching the
+    # {out}_wb_params.json convention pet_qc's fit_qc report expects
     mean_pars = mean_model.unit_conv(mean_opt.x, **unit_conv_kwargs)
     mean_pars = np.append(np.append(mean_pars, mean_nrmse), mean_bic)
-    ppg.io.write_pars(mean_pars, par_names, par_units, f"{args.out[0]}_wb_vals.csv")
+    ppg.io.write_pars_json(
+        mean_pars, par_names, par_units, f"{args.out[0]}_wb_params.json"
+    )
 
     # Write out whole-brain standard errors if necessary (nrmse/bic aren't
     # part of unit_conv's output, so they're excluded here)
@@ -263,14 +269,15 @@ def main():
             mean_se, par_names[:-2], par_units[:-2], f"{args.out[0]}_wb_se.csv"
         )
 
-    # Make a plot showing fitted pet
+    # Make a plot showing fitted pet -- JPEG, matching the
+    # {out}_wb_plot.jpeg convention pet_qc's fit_qc report expects
     mean_hat = mean_model.pred(mean_opt.x)
     ppg.util.tac_plot(
         mean_pet,
         hats=[mean_hat],
         labels=["Model Fit"],
         title="FDG Model Fit: Mean Tac",
-        out_path=f"{args.out[0]}_wb_fit.tiff",
+        out_path=f"{args.out[0]}_wb_plot.jpeg",
     )
 
     # Save whole-brain compartments if necessary
