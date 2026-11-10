@@ -78,6 +78,38 @@ def test_spectral_opt_default_rates_follow_veronese(tmp_path, monkeypatch):
     assert spectrum.shape == (100, 2)
 
 
+def test_spectral_opt_nan_flag_replaces_pet_nans(tmp_path, monkeypatch):
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, (2, 2, 1))
+
+    # Put NaNs in one voxel
+    pet_img = nib.load(pet_path)
+    pet_data = pet_img.get_fdata()
+    pet_data[0, 0, 0, 5:10] = np.nan
+    nib.Nifti1Image(pet_data, pet_img.affine).to_filename(pet_path)
+
+    # Without the flag the NaNs break the fit
+    out_prefix = str(tmp_path / "fail")
+    monkeypatch.setattr(
+        sys, "argv", ["spectral-opt", aif_path, pet_path, json_path, out_prefix]
+    )
+    with pytest.raises(ValueError):
+        spectral_opt.main()
+
+    # With it, every voxel gets a finite fit
+    out_prefix = str(tmp_path / "out")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["spectral-opt", aif_path, pet_path, json_path, out_prefix, "-nan", "0"],
+    )
+    spectral_opt.main()
+
+    for name in ["K1", "Vt", "nrmse"]:
+        img = nib.load(tmp_path / f"out_{name}.nii.gz").get_fdata()
+        assert np.all(np.isfinite(img))
+    assert json.loads((tmp_path / "out_args.json").read_text())["nan"] == [0.0]
+
+
 def test_spectral_opt_voxelwise(tmp_path, monkeypatch):
     aif_path, pet_path, json_path = _build_dataset(tmp_path, (2, 2, 1))
     out_prefix = str(tmp_path / "out")

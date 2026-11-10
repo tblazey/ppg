@@ -834,6 +834,7 @@ def load_pet(
     limit=None,
     scale=1.0 / 0.8657,
     vol_path=None,
+    nan=None,
 ):
     """
     Loads in PET data
@@ -855,6 +856,8 @@ def load_pet(
         Scale factor to convert PET to Well Bq/mL
     vol_path: string
         Path to volume weights
+    nan: float
+        If set, replaces NaNs in the PET image with this value
 
     Returns
     -------
@@ -892,6 +895,8 @@ def load_pet(
 
     # Create masked 2d pet file
     pet_data = pet_hdr.get_fdata()
+    if nan is not None:
+        pet_data[np.isnan(pet_data)] = nan
     pet_mskt = to_2d(pet_data)[msk_data, :] * scale
 
     # Create a nice time mask
@@ -1130,6 +1135,7 @@ def prep_model(
     censor_aif=False,
     img_paths=None,
     unif=False,
+    nan=None,
 ):
     """
     Runs common code needed to setup metabolic processing scripts
@@ -1161,6 +1167,8 @@ def prep_model(
         List of extra images to load in
     unif: boolean
         If True, interpolates the AIF to uniform sampling time
+    nan: float
+        If set, replaces NaNs in the PET image with this value
 
     Returns
     -------
@@ -1196,6 +1204,7 @@ def prep_model(
         limit=limit,
         scale=scale,
         vol_path=vol_path,
+        nan=nan,
     )
 
     # Load in aif into tac object
