@@ -3,6 +3,7 @@ import json
 import nibabel as nib
 import numpy as np
 import pytest
+import scipy.integrate as integ
 
 from ppg import util
 from ppg.tac import Tac
@@ -603,3 +604,44 @@ def test_prep_model_censor_aif_false_leaves_aif_untouched(tmp_path):
 
     assert np.array_equal(aif.time, frame_times)
     assert np.array_equal(aif.cnt, aif_cnt)
+
+
+def _coarse_aif():
+    # Hour-long, irregularly sampled aif
+    t = np.concatenate(
+        [np.arange(0, 120, 5.0), np.arange(120, 600, 30.0), np.arange(600, 3601, 300.0)]
+    )
+    return t, 100.0 * t * np.exp(-t / 60.0) + 5.0
+
+
+def test_spectral_basis_matches_fine_grid_reference():
+    t, cnt = _coarse_aif()
+    rates = np.array([0.0, 1e-4, 0.01, 1.0])
+    basis = util.spectral_basis(t, cnt, rates)
+
+    # Brute-force convolution of the same piecewise-linear aif
+    t_fine = np.linspace(0, t[-1], 360001)
+    cnt_fine = np.interp(t_fine, t, cnt)
+    for j, rate in enumerate(rates):
+        for k in [10, 30, len(t) - 1]:
+            keep = t_fine <= t[k]
+            ref = integ.trapezoid(
+                np.exp(-rate * (t[k] - t_fine[keep])) * cnt_fine[keep], t_fine[keep]
+            )
+            assert basis[k, j] == pytest.approx(ref, rel=1e-4)
+
+
+def test_spectral_basis_stays_finite_where_exp_conv_overflows():
+    # rate * t_max is far beyond exp's ~709 overflow point
+    t, cnt = _coarse_aif()
+    basis = util.spectral_basis(t, cnt, [1.0, 5.0])
+    assert np.all(np.isfinite(basis))
+    with np.errstate(over="ignore", invalid="ignore"):
+        hat = util.exp_conv(t, cnt, coef=[1.0], rate=[1.0])
+    assert not np.all(np.isfinite(hat))
+
+
+def test_spectral_basis_rate_zero_is_running_integral():
+    t, cnt = _coarse_aif()
+    basis = util.spectral_basis(t, cnt, [0.0])
+    assert np.allclose(basis[:, 0], integ.cumulative_trapezoid(cnt, t, initial=0.0))

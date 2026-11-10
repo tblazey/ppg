@@ -62,7 +62,7 @@ def normalize_radionuclide(radionuclide):
     return f"{mass}{element.capitalize()}"
 
 
-def load_pet_json(path):
+def load_pet_json(path, durations=False):
     """
     Loads frame timing and radionuclide half-life from a BIDS PET JSON sidecar
 
@@ -71,6 +71,8 @@ def load_pet_json(path):
     path: string
         Path to a BIDS *_pet.json sidecar file. Must contain FrameTimesStart,
         FrameDuration, and TracerRadionuclide fields.
+    durations: bool
+        If True, also return the duration of each frame
 
     Returns
     -------
@@ -78,14 +80,17 @@ def load_pet_json(path):
         Mid-frame time for each PET frame, in seconds
     h_life: float
         Physical half-life of TracerRadionuclide, in seconds
+    frame_durs: array
+        Only returned if durations is True. Duration of each PET frame, in
+        seconds
     """
 
     with open(path, "r") as json_file:
         meta = json.load(json_file)
 
     starts = np.array(meta["FrameTimesStart"], dtype=float)
-    durations = np.array(meta["FrameDuration"], dtype=float)
-    frame_times = starts + durations / 2.0
+    frame_durs = np.array(meta["FrameDuration"], dtype=float)
+    frame_times = starts + frame_durs / 2.0
 
     radionuclide = normalize_radionuclide(meta["TracerRadionuclide"])
     if radionuclide not in RADIONUCLIDE_HALF_LIFE:
@@ -93,6 +98,8 @@ def load_pet_json(path):
             f"Unknown radionuclide {radionuclide}. Add it to io.RADIONUCLIDE_HALF_LIFE."
         )
 
+    if durations is True:
+        return frame_times, RADIONUCLIDE_HALF_LIFE[radionuclide], frame_durs
     return frame_times, RADIONUCLIDE_HALF_LIFE[radionuclide]
 
 

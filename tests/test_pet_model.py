@@ -10,6 +10,7 @@ from ppg.pet_model import (
     OneComp,
     OxyOne,
     PetModel,
+    Spectral,
     TwoComp,
 )
 from ppg.tac import Tac
@@ -241,3 +242,58 @@ def test_oxy_one_requires_matching_decay_status(synth_aif):
 
     with pytest.raises(ValueError):
         OxyOne(oxy, water, pet, flow=0.005, k2=0.001, vb=0.04)
+
+
+def _spectral_dataset(vb=0.04):
+    # Irreversible two-tissue curve: Ki trapping term plus one exchange
+    # rate (k2 + k3), with a blood volume fraction
+    t = np.concatenate(
+        [np.arange(0, 120, 5.0), np.arange(120, 600, 30.0), np.arange(600, 3601, 300.0)]
+    )
+    aif_cnt = 100.0 * t * np.exp(-t / 60.0) + 5.0
+    K1, k2, k3 = 0.0017, 0.0021, 0.001
+    ki = K1 * k3 / (k2 + k3)
+    tissue = util.spectral_basis(t, aif_cnt, [0.0, k2 + k3]) @ [ki, K1 - ki]
+    pet_cnt = (1.0 - vb) * tissue + vb * aif_cnt
+
+    aif = Tac(t, aif_cnt, dc=True, h_life=6586.2)
+    pet = Tac(t, pet_cnt, dc=True, h_life=6586.2)
+    truth = {
+        "K1": (1.0 - vb) * K1 * 6000.0 / 1.05,
+        "Ki": (1.0 - vb) * ki * 6000.0 / 1.05,
+        "Vt": (1.0 - vb) * (K1 - ki) / (k2 + k3) * 100.0 / 1.05,
+        "Vb": vb * 100.0,
+    }
+    return aif, pet, truth
+
+
+def test_spectral_recovers_known_truth():
+    aif, pet, truth = _spectral_dataset()
+    rates = np.insert(np.logspace(-5, 0, 100), 0, 0.0)
+    model = Spectral(aif, pet, rates, vb=True)
+
+    coefs = model.coef()
+    K1, ki, vt, vb = model.unit_conv(coefs)
+
+    assert np.all(coefs >= 0.0)
+    assert K1 == pytest.approx(truth["K1"], rel=0.01)
+    assert ki == pytest.approx(truth["Ki"], rel=0.01)
+    assert vt == pytest.approx(truth["Vt"], rel=0.01)
+    assert vb == pytest.approx(truth["Vb"], rel=0.01)
+    assert np.sqrt(model.cost(coefs) / pet.n) / np.mean(pet.cnt) < 1e-3
+
+
+def test_spectral_unit_conv_drops_ki_and_vb_when_not_in_basis():
+    aif, pet, _ = _spectral_dataset(vb=0.0)
+    model = Spectral(aif, pet, np.logspace(-4, 0, 50))
+    assert model.basis.shape == (pet.n, 50)
+    assert model.unit_conv(model.coef()).shape == (2,)
+
+
+def test_spectral_coef_reuses_basis_for_other_tacs():
+    aif, pet, _ = _spectral_dataset()
+    rates = np.insert(np.logspace(-5, 0, 100), 0, 0.0)
+    model = Spectral(aif, pet, rates, vb=True)
+
+    # Fitting a scaled tac through the same basis should scale the coefs
+    assert np.allclose(model.coef(2.0 * pet.cnt), 2.0 * model.coef(), rtol=1e-6)

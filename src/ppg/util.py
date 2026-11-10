@@ -1269,6 +1269,63 @@ def prep_model(
         )
 
 
+def spectral_basis(time, cnt, rates):
+    """
+    Convolves an aif with a set of unit exponentials for spectral analysis
+
+    For each rate, computes integral_0^t exp(-rate * (t - tau)) * aif(tau) dtau
+    at every point in time, treating the aif as linear between samples. The
+    integral over each interval is computed exactly and carried forward
+    recursively, so unlike exp_conv no exp(rate * t) term is ever formed and
+    fast rates (e.g. 1/sec over an hour long scan) do not overflow.
+
+    Parameters
+    ----------
+    time: array
+        A n length array of aif sampling times
+    cnt: array
+        A n length array of aif counts
+    rates: array
+        A m length array of exponential rates. A rate of 0 gives the
+        running integral of the aif.
+
+    Returns
+    -------
+    basis: array
+        A n x m array with the convolution for each rate at each time
+    """
+
+    # Make empty basis. Rate 0 terms get a placeholder rate so the
+    # exponential formulas below don't divide by zero
+    rates = np.asarray(rates, dtype=float)
+    basis = np.zeros((time.shape[0], rates.shape[0]))
+    zero = rates == 0.0
+    rate = np.where(zero, 1.0, rates)
+
+    # Loop through aif intervals
+    for k in range(1, time.shape[0]):
+        # Decay over interval. expm1 keeps 1 - exp(-x) accurate for small x
+        dt = time[k] - time[k - 1]
+        x = rate * dt
+        decay = np.exp(-x)
+        one_m_decay = -np.expm1(-x)
+
+        # Exact integral over the interval for a linear aif segment
+        slope = (cnt[k] - cnt[k - 1]) / dt
+        seg = cnt[k] * one_m_decay / rate - slope * (
+            one_m_decay - x * decay
+        ) / np.power(rate, 2)
+
+        # Rate 0 terms are just trapezoidal integration
+        seg[zero] = 0.5 * dt * (cnt[k] + cnt[k - 1])
+        decay[zero] = 1.0
+
+        # Decay previous integral and add current interval
+        basis[k, :] = decay * basis[k - 1, :] + seg
+
+    return basis
+
+
 def tac_plot(tac, hats=None, labels=None, title=None, out_path=None, t_hat=None):
     """
     Plot showing time activity curve and possible model fits

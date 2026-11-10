@@ -24,6 +24,21 @@ def test_load_pet_json_computes_mid_frame_times_and_half_life(tmp_path):
     assert h_life == pytest.approx(io.RADIONUCLIDE_HALF_LIFE["18F"])
 
 
+def test_load_pet_json_durations_flag_returns_frame_durations(tmp_path):
+    path = tmp_path / "pet.json"
+    meta = {
+        "FrameTimesStart": [0.0, 10.0, 30.0],
+        "FrameDuration": [10.0, 20.0, 60.0],
+        "TracerRadionuclide": "18F",
+    }
+    path.write_text(json.dumps(meta))
+
+    frame_times, _, frame_durs = io.load_pet_json(str(path), durations=True)
+
+    assert np.allclose(frame_times, [5.0, 20.0, 60.0])
+    assert np.allclose(frame_durs, [10.0, 20.0, 60.0])
+
+
 @pytest.mark.parametrize(
     "raw, expected",
     [

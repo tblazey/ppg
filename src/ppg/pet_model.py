@@ -876,6 +876,129 @@ class OhtaTwo(PetModel):
             return np.array([K1, k2, lmbda, v0, K1 * art])
 
 
+class Spectral(PetModel):
+    """
+    Defines spectral analysis model (Cunningham and Jones, 1993)
+    """
+
+    def __init__(self, aif, pet, rates, vb=False, same_grid=None):
+        """
+        Initialize model object for spectral analysis
+
+        Parameters
+        ----------
+        aif: Tac object
+            Tac object containing the aif data
+        pet: Tac object
+            Tac object containing the pet data
+        rates: array
+            A m length array of rates (1/sec) for the spectral basis. A
+            rate of 0 is a trapping term.
+        vb: bool
+            If True, add a blood volume term to the basis
+        same_grid: bool, optional
+            See PetModel.__init__
+        """
+
+        # Initialize model
+        PetModel.__init__(self, aif, pet, name="Spectral Analysis", same_grid=same_grid)
+        self.rates = np.asarray(rates, dtype=float)
+        self.vb = vb
+
+        # Convolve aif with each exponential and interpolate to pet times.
+        # The basis is the same for any tac on pet's time grid, so it only
+        # needs to be computed once
+        basis = util.spectral_basis(self.aif.time, self.aif.cnt, self.rates)
+        self.basis = util.resample(
+            self.aif.time, basis.T, self.pet.time, same_grid=self.same_grid
+        ).T
+
+        # Add in blood volume term if necessary
+        if self.vb is True:
+            aif_i = util.resample(
+                self.aif.time, self.aif.cnt, self.pet.time, same_grid=self.same_grid
+            )
+            self.basis = np.column_stack((self.basis, aif_i))
+
+    def coef(self, cnt=None):
+        """
+        Compute spectral coefficients with non-negative least squares
+
+        Parameters
+        ----------
+        cnt: array
+            Counts to fit, sampled at pet times. Defaults to the pet data.
+            Lets the basis be reused for other tacs on the same time grid
+            (e.g. voxels)
+
+        Returns
+        -------
+        coefs: array
+            Coefficient for each rate, followed by blood volume if necessary
+        """
+
+        if cnt is None:
+            cnt = self.pet.cnt
+
+        # Get non-negative least squares solution
+        coefs, _ = opt.nnls(self.basis, cnt)
+
+        return coefs
+
+    def pred(self, params):
+        """
+        Generates predictions for spectral model
+
+        Parameters
+        ----------
+        params: array
+            Spectral coefficients from coef
+
+        Returns
+        -------
+        pred: array
+            A vector of model predictions at pet times
+        """
+
+        return self.basis @ params
+
+    def unit_conv(self, params):
+        """
+        Converts model parameters to physiological measurements
+
+        Parameters
+        ----------
+        params: array
+            Spectral coefficients from coef
+
+        Returns
+        -------
+        meas: array
+            K1, Ki (if a rate is 0), Vt, and Vb (if vb is True). Vt only
+            includes the reversible (non-zero rate) components
+        """
+
+        # Split coefficients into exponential and trapping terms
+        alpha = params[0 : self.rates.shape[0]]
+        trap = self.rates == 0.0
+
+        # K1 is the impulse response at time 0
+        K1 = np.sum(alpha) * 6000.0 / 1.05  # mL/hg/min
+
+        # Vt is the integral of the reversible part of the impulse response
+        vt = np.sum(alpha[~trap] / self.rates[~trap]) * 100.0 / 1.05  # mL/hg
+
+        # Make parameter list for output
+        meas = [K1]
+        if np.any(trap):
+            meas.append(np.sum(alpha[trap]) * 6000.0 / 1.05)  # mL/hg/min
+        meas.append(vt)
+        if self.vb is True:
+            meas.append(params[-1] * 100.0)  # %
+
+        return np.array(meas)
+
+
 class OneComp(PetModel):
     """
     Defines 2 paramter, 1 compartment with shift
