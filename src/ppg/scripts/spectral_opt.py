@@ -13,6 +13,7 @@ import argparse
 import sys
 
 import matplotlib.pyplot as plt
+import nibabel as nib
 import numpy as np
 from tqdm import tqdm
 
@@ -217,6 +218,16 @@ def main():
     plt.xlabel("Rate (1/sec)", color="black", weight="bold", size=10)
     plt.ylabel("Coefficient (1/sec)", color="black", weight="bold", size=10)
     plt.title("Spectrum: Mean Tac", weight="bold")
+
+    # Report the terms that aren't on the plot in the legend. Empty plots
+    # give legend entries without markers, and "best" keeps them off peaks
+    if args.trap[0] is True or args.vb[0] is True:
+        if args.trap[0] is True:
+            trap_str = f"Trapping (rate 0): {mean_alpha[~rev][0]:.3g} 1/sec"
+            plt.plot([], [], " ", label=trap_str)
+        if args.vb[0] is True:
+            plt.plot([], [], " ", label=f"Blood volume: {mean_coef[-1] * 100.0:.3g} %")
+        plt.legend(loc="best", handlelength=0, fontsize=9)
     plt.savefig(f"{args.out[0]}_wb_spectrum.jpeg")
     plt.close()
 
@@ -229,6 +240,7 @@ def main():
     # Make empty array for storing voxelwise parameters
     n_vox = pet_mskd.shape[0]
     vox_params = np.zeros((n_vox, len(par_names)))
+    vox_spec = np.zeros((n_vox, rates.shape[0]))
 
     # Loop through voxels
     for i in tqdm(range(n_vox)):
@@ -236,8 +248,9 @@ def main():
         vox_cnt = pet_mskd[i, :]
         vox_coef = mean_model.coef(vox_cnt)
 
-        # Store parameter estimates
+        # Store parameter estimates and spectrum
         vox_params[i, 0:-1] = mean_model.unit_conv(vox_coef)
+        vox_spec[i, :] = vox_coef[0 : rates.shape[0]]
 
         # Compute normalized rmse
         vox_sse = np.sum(np.power(vox_cnt - mean_model.pred(vox_coef), 2))
@@ -248,6 +261,14 @@ def main():
     ppg.io.write_imgs(
         vox_params, pet_hdr.shape[0:3], pet_hdr.affine, img_names, msk=msk_data
     )
+
+    # Save voxelwise spectrum as a 4D image, one volume per rate. Rates for
+    # each volume are in the first column of the whole-brain spectrum csv
+    spec_shape = pet_hdr.shape[0:3] + (rates.shape[0],)
+    spec_data = np.zeros(spec_shape).reshape(-1, rates.shape[0])
+    spec_data[msk_data, :] = vox_spec
+    spec_hdr = nib.Nifti1Image(spec_data.reshape(spec_shape), pet_hdr.affine)
+    spec_hdr.to_filename(f"{args.out[0]}_spectrum.nii.gz")
 
     # Make a histogram plot for each parameter
     if args.hist[0] == 1:

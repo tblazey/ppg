@@ -1,6 +1,7 @@
 import json
 import sys
 
+import nibabel as nib
 import numpy as np
 import pytest
 
@@ -102,3 +103,15 @@ def test_spectral_opt_voxelwise(tmp_path, monkeypatch):
         assert (tmp_path / f"out_{name}_hist.tiff").exists()
 
     assert (tmp_path / "out_args.json").exists()
+
+    # Spectrum has one volume per rate (100 log-spaced plus the trap term),
+    # in the same order as the whole-brain spectrum csv
+    spec = nib.load(tmp_path / "out_spectrum.nii.gz").get_fdata()
+    wb_spec = np.loadtxt(tmp_path / "out_wb_spectrum.csv", delimiter=",")
+    assert spec.shape == (2, 2, 1, 101)
+    assert np.all(spec >= 0.0)
+
+    # Summing each voxel's spectrum should reproduce its K1 image
+    k1 = nib.load(tmp_path / "out_K1.nii.gz").get_fdata()
+    assert np.allclose(spec.sum(axis=-1) * 6000.0 / 1.05, k1)
+    assert wb_spec.shape[0] == spec.shape[-1]
