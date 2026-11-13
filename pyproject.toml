@@ -30,6 +30,7 @@ cmr-opt = "ppg.scripts.cmr_opt:main"
 ohta-opt = "ppg.scripts.ohta_opt:main"
 aif-fit = "ppg.scripts.aif_fit:main"
 oef-opt = "ppg.scripts.oef_opt:main"
+comp-shift-aif = "ppg.scripts.comp_shift_aif:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ppg"]
