@@ -25,16 +25,28 @@ def main():
         description="Computes shift for input function"
         + " using a generic compartmental model"
     )
-    parser.add_argument("aif", type=str, nargs=1, help="Input function csv file")
-    parser.add_argument("pet", type=str, nargs=1, help="PET csv file")
+    parser.add_argument("aif", type=str, nargs=1, help="Aif csv file")
+    parser.add_argument("pet", type=str, nargs=1, help="4D PET image")
     parser.add_argument(
-        "comp",
-        type=str,
-        nargs=1,
-        choices=["one", "two"],
-        help="Number of compartments to include",
+        "pet_json", type=str, nargs=1, help="BIDS PET JSON sidecar (*_pet.json)"
     )
     parser.add_argument("out", type=str, nargs=1, help="Root for file output")
+    parser.add_argument(
+        "-censor",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="frame",
+        help="0-based indices of PET frames to exclude (e.g. -censor 3 7 12)",
+    )
+    parser.add_argument(
+        "-comp",
+        type=str,
+        nargs=1,
+        default=["one"],
+        choices=["one", "two"],
+        help="Number of compartments to include. Default is one",
+    )
     parser.add_argument(
         "-fdg",
         action="store_const",
@@ -52,11 +64,36 @@ def main():
         + " bolus arrival. Default is to use entire scan.",
     )
     parser.add_argument(
-        "-vol",
+        "-mask",
+        type=str,
+        nargs=1,
+        metavar="nii",
+        default=[None],
+        help="3D binary mask image",
+    )
+    parser.add_argument(
+        "-scale",
+        type=float,
+        nargs=1,
+        default=[1.0],
+        metavar="float",
+        help="Scale factor to convert Pet activity to Well Bq/mL." + " Default is 1.0",
+    )
+    parser.add_argument(
+        "-vb",
         action="store_const",
         const=[True],
         default=[False],
         help="Add term for blood volume correction. Default is no correction.",
+    )
+    parser.add_argument(
+        "-vol",
+        type=str,
+        nargs=1,
+        metavar="nii",
+        default=[None],
+        help="Volume for each voxel in input images."
+        + " Used for weighting whole-brain average",
     )
     args = parser.parse_args()
 
@@ -72,17 +109,23 @@ def main():
         par_units = ["sec", "mL/hg/min", "1/min", "1/min", "1/min"]
 
     # Add in blood volume
-    if args.vol[0] is True:
+    if args.vb[0] is True:
         par_names.append("Vb")
         par_units.append("mL/hg")
 
-    # Load in aif and tac data
-    aif = ppg.io.txt_to_tac(args.aif[0])
-    pet = ppg.io.txt_to_tac(args.pet[0])
+    # Load PET image and compute the whole-brain tac (limited/censored)
+    _, _, _, _, pet, h_life = ppg.util.load_pet(
+        args.pet[0],
+        args.pet_json[0],
+        censor_frames=args.censor,
+        msk_path=args.mask[0],
+        limit=args.limit[0],
+        scale=args.scale[0],
+        vol_path=args.vol[0],
+    )
 
-    # Limit analysis to valid times
-    time_msk = ppg.util.gen_time_mask(pet, limit=args.limit[0])
-    pet = ppg.Tac(pet.time[time_msk], pet.cnt[time_msk])
+    # Load in aif
+    aif = ppg.io.txt_to_tac(args.aif[0], dc=True, h_life=h_life)
 
     # Compute peak times for aif and pet bolus
     aif_pt, aif_p = ppg.util.loc_peak(aif, tac_interp=False)
@@ -117,9 +160,9 @@ def main():
 
     # Create model for shift optimization
     if args.comp[0] == "one":
-        comp_model = ppg.pet_model.OneComp(aif, pet, vol=args.vol[0])
+        comp_model = ppg.pet_model.OneComp(aif, pet, vol=args.vb[0])
     else:
-        comp_model = ppg.pet_model.TwoComp(aif, pet, vol=args.vol[0], fdg=args.fdg[0])
+        comp_model = ppg.pet_model.TwoComp(aif, pet, vol=args.vb[0], fdg=args.fdg[0])
 
     # Search for best shift on a grid with 1 second spacing
     rough_grid = (slice(min_shift, max_shift, 1),)

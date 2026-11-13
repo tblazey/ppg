@@ -7,7 +7,7 @@ import pytest
 from ppg import util
 from ppg.scripts import comp_shift_aif
 
-from .conftest import save_csv
+from .conftest import replicate_to_4d, save_csv, save_nifti, save_pet_json
 
 # Measured aif arrives this many seconds after the input at the tissue
 TRUE_SHIFT = 12.0
@@ -37,12 +37,16 @@ def _build_dataset(tmp_path, comp):
             [rate, 0.0],
         )
 
-    # PET sampled every 4 sec
+    # PET frames every 4 sec, as a 4D image with a BIDS sidecar
     pet_time = np.arange(2, 290, 4.0)
     aif_path = save_csv(tmp_path / "aif.csv", t, _input(t - TRUE_SHIFT))
-    pet_path = save_csv(tmp_path / "pet.csv", pet_time, np.interp(pet_time, t, pet_cnt))
+    json_path = save_pet_json(
+        tmp_path / "pet.json", pet_time, duration=4.0, radionuclide="18F"
+    )
+    pet_data = replicate_to_4d(np.interp(pet_time, t, pet_cnt), (2, 2, 1))
+    pet_path = save_nifti(tmp_path / "pet.nii.gz", pet_data)
 
-    return aif_path, pet_path
+    return aif_path, pet_path, json_path
 
 
 def _read_vals(path):
@@ -52,11 +56,13 @@ def _read_vals(path):
 
 @pytest.mark.parametrize("comp", ["one", "two"])
 def test_comp_shift_aif_recovers_shift(tmp_path, monkeypatch, comp):
-    aif_path, pet_path = _build_dataset(tmp_path, comp)
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, comp)
     out_prefix = str(tmp_path / "out")
 
     monkeypatch.setattr(
-        sys, "argv", ["comp-shift-aif", aif_path, pet_path, comp, out_prefix]
+        sys,
+        "argv",
+        ["comp-shift-aif", aif_path, pet_path, json_path, out_prefix, "-comp", comp],
     )
     comp_shift_aif.main()
 
@@ -79,14 +85,14 @@ def test_comp_shift_aif_recovers_shift(tmp_path, monkeypatch, comp):
     assert json.loads((tmp_path / "out_args.json").read_text())["comp"] == [comp]
 
 
-def test_comp_shift_aif_vol_adds_blood_volume(tmp_path, monkeypatch):
-    aif_path, pet_path = _build_dataset(tmp_path, "one")
+def test_comp_shift_aif_vb_adds_blood_volume(tmp_path, monkeypatch):
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, "one")
     out_prefix = str(tmp_path / "out")
 
     monkeypatch.setattr(
         sys,
         "argv",
-        ["comp-shift-aif", aif_path, pet_path, "one", out_prefix, "-vol"],
+        ["comp-shift-aif", aif_path, pet_path, json_path, out_prefix, "-vb"],
     )
     comp_shift_aif.main()
 
