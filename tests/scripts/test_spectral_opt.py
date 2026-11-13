@@ -110,6 +110,41 @@ def test_spectral_opt_nan_flag_replaces_pet_nans(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "out_args.json").read_text())["nan"] == [0.0]
 
 
+def test_spectral_opt_pred_saves_fitted_curves(tmp_path, monkeypatch):
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, (2, 2, 1))
+    out_prefix = str(tmp_path / "out")
+
+    # Censor a frame so the prediction has fewer frames than the input
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "spectral-opt",
+            aif_path,
+            pet_path,
+            json_path,
+            out_prefix,
+            "-trap",
+            "-pred",
+            "-censor",
+            "3",
+        ],
+    )
+    spectral_opt.main()
+
+    # Whole-brain csv has time, measured, and predicted, minus the censored frame
+    wb_pred = np.loadtxt(tmp_path / "out_wb_pred.csv", delimiter=",")
+    pet_data = nib.load(pet_path).get_fdata()
+    assert wb_pred.shape == (pet_data.shape[-1] - 1, 3)
+    assert np.allclose(wb_pred[:, 2], wb_pred[:, 1], rtol=0.05, atol=1.0)
+
+    # Voxel predictions are close to the data on the same frames
+    pred = nib.load(tmp_path / "out_pred.nii.gz").get_fdata()
+    assert pred.shape == (2, 2, 1, wb_pred.shape[0])
+    fit_data = np.delete(pet_data, 3, axis=-1)
+    assert np.allclose(pred, fit_data, rtol=0.05, atol=0.05 * fit_data.max())
+
+
 def test_spectral_opt_voxelwise(tmp_path, monkeypatch):
     aif_path, pet_path, json_path = _build_dataset(tmp_path, (2, 2, 1))
     out_prefix = str(tmp_path / "out")

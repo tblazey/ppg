@@ -97,6 +97,13 @@ def main():
         help="Number of log-spaced rates in the spectral basis. Default is 100",
     )
     parser.add_argument(
+        "-pred",
+        action="store_const",
+        const=[True],
+        default=[False],
+        help="Save model predictions for the whole-brain and voxel fits",
+    )
+    parser.add_argument(
         "-rates",
         type=float,
         nargs=2,
@@ -202,13 +209,22 @@ def main():
     )
 
     # Make a plot showing fitted pet
+    mean_hat = mean_model.pred(mean_coef)
     ppg.util.tac_plot(
         mean_pet,
-        hats=[mean_model.pred(mean_coef)],
+        hats=[mean_hat],
         labels=["Model Fit"],
         title="Spectral Model Fit: Mean Tac",
         out_path=f"{args.out[0]}_wb_plot.jpeg",
     )
+
+    # Save whole-brain prediction if necessary
+    if args.pred[0] is True:
+        np.savetxt(
+            f"{args.out[0]}_wb_pred.csv",
+            np.stack((mean_pet.time, mean_pet.cnt, mean_hat), axis=1),
+            delimiter=",",
+        )
 
     # Save whole-brain spectrum (blood volume, if present, is the last coef)
     mean_alpha = mean_coef[0 : rates.shape[0]]
@@ -251,20 +267,27 @@ def main():
     n_vox = pet_mskd.shape[0]
     vox_params = np.zeros((n_vox, len(par_names)))
     vox_spec = np.zeros((n_vox, rates.shape[0]))
+    if args.pred[0] is True:
+        vox_pred = np.zeros((n_vox, mean_pet.n))
 
     # Loop through voxels
     for i in tqdm(range(n_vox)):
         # Fit current voxel using the whole-brain basis
         vox_cnt = pet_mskd[i, :]
         vox_coef = mean_model.coef(vox_cnt)
+        vox_hat = mean_model.pred(vox_coef)
 
         # Store parameter estimates and spectrum
         vox_params[i, 0:-1] = mean_model.unit_conv(vox_coef)
         vox_spec[i, :] = vox_coef[0 : rates.shape[0]]
 
         # Compute normalized rmse
-        vox_sse = np.sum(np.power(vox_cnt - mean_model.pred(vox_coef), 2))
+        vox_sse = np.sum(np.power(vox_cnt - vox_hat, 2))
         vox_params[i, -1] = np.sqrt(vox_sse / mean_pet.n) / np.mean(vox_cnt)
+
+        # Store voxel prediction
+        if args.pred[0] is True:
+            vox_pred[i, :] = vox_hat
 
     # Save voxelwise parameters
     img_names = [f"{args.out[0]}_{name}" for name in par_names]
@@ -279,6 +302,15 @@ def main():
     spec_data[msk_data, :] = vox_spec
     spec_hdr = nib.Nifti1Image(spec_data.reshape(spec_shape), pet_hdr.affine)
     spec_hdr.to_filename(f"{args.out[0]}_spectrum.nii.gz")
+
+    # Save voxelwise predictions as a 4D image if necessary. Only has the
+    # frames that were fit, i.e. the ones in the whole-brain prediction csv
+    if args.pred[0] is True:
+        pred_shape = pet_hdr.shape[0:3] + (mean_pet.n,)
+        pred_data = np.zeros(pred_shape).reshape(-1, mean_pet.n)
+        pred_data[msk_data, :] = vox_pred
+        pred_hdr = nib.Nifti1Image(pred_data.reshape(pred_shape), pet_hdr.affine)
+        pred_hdr.to_filename(f"{args.out[0]}_pred.nii.gz")
 
     # Make a histogram plot for each parameter
     if args.hist[0] == 1:
