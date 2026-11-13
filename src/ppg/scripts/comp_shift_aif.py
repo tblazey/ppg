@@ -72,6 +72,15 @@ def main():
         help="3D binary mask image",
     )
     parser.add_argument(
+        "-nan",
+        type=float,
+        nargs=1,
+        default=[None],
+        metavar="float",
+        help="Replace NaNs in the PET image with this value (e.g. 0)."
+        + " Default is no replacement, which fails if there are NaNs",
+    )
+    parser.add_argument(
         "-scale",
         type=float,
         nargs=1,
@@ -122,6 +131,7 @@ def main():
         limit=args.limit[0],
         scale=args.scale[0],
         vol_path=args.vol[0],
+        nan=args.nan[0],
     )
 
     # Load in aif

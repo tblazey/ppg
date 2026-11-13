@@ -1,6 +1,7 @@
 import json
 import sys
 
+import nibabel as nib
 import numpy as np
 import pytest
 
@@ -99,3 +100,42 @@ def test_comp_shift_aif_vb_adds_blood_volume(tmp_path, monkeypatch):
     values = _read_vals(tmp_path / "out_vals.csv")
     assert list(values) == ["shift", "K1", "k2", "lambda", "Vb"]
     assert values["shift"] == pytest.approx(TRUE_SHIFT, abs=0.5)
+
+
+def test_comp_shift_aif_nan_flag_replaces_pet_nans(tmp_path, monkeypatch):
+    aif_path, pet_path, json_path = _build_dataset(tmp_path, "one")
+
+    # Put NaNs in one voxel
+    pet_img = nib.load(pet_path)
+    pet_data = pet_img.get_fdata()
+    pet_data[0, 0, 0, 5:10] = np.nan
+    nib.Nifti1Image(pet_data, pet_img.affine).to_filename(pet_path)
+
+    # Without the flag the NaNs break the fit
+    out_prefix = str(tmp_path / "fail")
+    monkeypatch.setattr(
+        sys, "argv", ["comp-shift-aif", aif_path, pet_path, json_path, out_prefix]
+    )
+    with pytest.raises(ValueError):
+        comp_shift_aif.main()
+
+    # With it, the result matches an image where those values are already 0
+    out_prefix = str(tmp_path / "out")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["comp-shift-aif", aif_path, pet_path, json_path, out_prefix, "-nan", "0"],
+    )
+    comp_shift_aif.main()
+
+    zero_path = str(tmp_path / "pet_zero.nii.gz")
+    nib.Nifti1Image(np.nan_to_num(pet_data), pet_img.affine).to_filename(zero_path)
+    out_prefix = str(tmp_path / "zero")
+    monkeypatch.setattr(
+        sys, "argv", ["comp-shift-aif", aif_path, zero_path, json_path, out_prefix]
+    )
+    comp_shift_aif.main()
+
+    values = _read_vals(tmp_path / "out_vals.csv")
+    assert np.all(np.isfinite(list(values.values())))
+    assert values == _read_vals(tmp_path / "zero_vals.csv")
